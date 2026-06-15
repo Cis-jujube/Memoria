@@ -1,0 +1,328 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PendingUpdateStatus {
+  PENDING
+  CONFIRMED
+  DISCARDED
+}
+
+enum PendingUpdateType {
+  PROFILE_FACT
+  PREFERENCE
+  EVENT
+  REMINDER
+  GIFT_IDEA
+  RELATIONSHIP
+  FILE_NOTE
+}
+
+enum ReminderStatus {
+  ACTIVE
+  SENT
+  DISMISSED
+  ARCHIVED
+}
+
+enum FileStatus {
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum AIJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts          Account[]
+  sessions          Session[]
+  people            Person[]
+  memories          Memory[]
+  pendingUpdates    PendingUpdate[]
+  reminders         Reminder[]
+  giftIdeas         GiftIdea[]
+  uploadedFiles     UploadedFile[]
+  contactGroups     ContactGroup[]
+  personGroups      PersonGroup[]
+  relationshipEdges RelationshipEdge[]
+  aiJobs            AIJob[]
+  auditEvents       AuditEvent[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Person {
+  id                String    @id @default(cuid())
+  userId            String
+  displayName       String
+  preferredName     String?
+  pronouns          String?
+  avatarUrl         String?
+  relationLabel     String?
+  groupLabel        String?
+  location          String?
+  timezone          String?
+  birthdayMonth     Int?
+  birthdayDay       Int?
+  birthdayYear      Int?
+  schoolOrCompany   String?
+  majorOrRole       String?
+  communication     Json      @default("{}")
+  preferences       Json      @default("{}")
+  boundaries        Json      @default("{}")
+  importantFacts    Json      @default("[]")
+  sourceSummary     String?
+  lastInteractionAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  memories         Memory[]
+  pendingUpdates   PendingUpdate[]
+  reminders        Reminder[]
+  giftIdeas        GiftIdea[]
+  uploadedFiles    UploadedFile[]
+  groups           PersonGroup[]
+  relationshipFrom RelationshipEdge[] @relation("RelationshipFrom")
+  relationshipTo   RelationshipEdge[] @relation("RelationshipTo")
+
+  @@index([userId, displayName])
+}
+
+model ContactGroup {
+  id          String   @id @default(cuid())
+  userId      String
+  label       String
+  color       String   @default("#184f3c")
+  description String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  members PersonGroup[]
+
+  @@unique([userId, label])
+  @@index([userId, sortOrder])
+}
+
+model PersonGroup {
+  id        String   @id @default(cuid())
+  userId    String
+  personId  String
+  groupId   String
+  createdAt DateTime @default(now())
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
+  group  ContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, groupId])
+  @@index([userId, groupId])
+  @@index([userId, personId])
+}
+
+model Memory {
+  id         String    @id @default(cuid())
+  userId     String
+  personId   String?
+  title      String
+  body       String
+  occurredAt DateTime?
+  tags       String[]  @default([])
+  sourceType String
+  sourceId   String?
+  confidence Float     @default(1)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@index([userId, personId])
+  @@index([userId, occurredAt])
+}
+
+model PendingUpdate {
+  id            String              @id @default(cuid())
+  userId        String
+  personId      String?
+  type          PendingUpdateType
+  status        PendingUpdateStatus @default(PENDING)
+  fieldPath     String
+  proposedValue Json
+  summary       String
+  evidence      String
+  sourceType    String
+  sourceId      String?
+  confidence    Float               @default(0.75)
+  createdAt     DateTime            @default(now())
+  reviewedAt    DateTime?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([userId, personId])
+}
+
+model Reminder {
+  id             String         @id @default(cuid())
+  userId         String
+  personId       String?
+  title          String
+  body           String?
+  dueAt          DateTime
+  status         ReminderStatus @default(ACTIVE)
+  emailSentAt    DateTime?
+  recurrenceRule String?
+  sourceType     String
+  sourceId       String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@index([userId, dueAt, status])
+}
+
+model GiftIdea {
+  id            String   @id @default(cuid())
+  userId        String
+  personId      String
+  title         String
+  rationale     String
+  priceBand     String?
+  occasion      String?
+  sourceFactIds String[] @default([])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([userId, personId])
+}
+
+model UploadedFile {
+  id            String     @id @default(cuid())
+  userId        String
+  personId      String?
+  blobUrl       String
+  pathname      String
+  filename      String
+  contentType   String
+  size          Int
+  status        FileStatus @default(UPLOADED)
+  extractedText String?    @db.Text
+  parseError    String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person Person? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+}
+
+model RelationshipEdge {
+  id           String   @id @default(cuid())
+  userId       String
+  fromPersonId String
+  toPersonId   String
+  label        String
+  strength     Int      @default(1)
+  evidence     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromPerson Person @relation("RelationshipFrom", fields: [fromPersonId], references: [id], onDelete: Cascade)
+  toPerson   Person @relation("RelationshipTo", fields: [toPersonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fromPersonId, toPersonId, label])
+}
+
+model AIJob {
+  id           String      @id @default(cuid())
+  userId       String
+  type         String
+  status       AIJobStatus @default(QUEUED)
+  inputSummary String
+  output       Json?
+  error        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}

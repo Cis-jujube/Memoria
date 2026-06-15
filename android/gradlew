@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GRADLE_VERSION="${GRADLE_VERSION:-9.5.1}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_DIR="$ROOT_DIR/.gradle-wrapper"
+DIST_DIR="$CACHE_DIR/gradle-$GRADLE_VERSION"
+ZIP_PATH="$CACHE_DIR/gradle-$GRADLE_VERSION-bin.zip"
+GRADLE_BIN="$DIST_DIR/bin/gradle"
+
+if [[ ! -x "$GRADLE_BIN" ]]; then
+  mkdir -p "$CACHE_DIR"
+
+  if [[ ! -f "$ZIP_PATH" ]]; then
+    echo "Downloading Gradle $GRADLE_VERSION..." >&2
+    curl -fL "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip" -o "$ZIP_PATH"
+  fi
+
+  rm -rf "$DIST_DIR"
+  unzip -q "$ZIP_PATH" -d "$CACHE_DIR"
+fi
+
+exec "$GRADLE_BIN" "$@"

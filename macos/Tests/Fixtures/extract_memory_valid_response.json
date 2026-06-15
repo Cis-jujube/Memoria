@@ -1,0 +1,40 @@
+{
+  "entry_summary": "用户反思自己和 Alex 的关系中可能害怕麻烦对方。",
+  "memory_proposals": [
+    {
+      "proposal_type": "memory_atom",
+      "memory_type": "personal_reflection",
+      "title": "我在人际关系里害怕麻烦别人",
+      "summary": "这条记忆反映了用户在和 Alex 的关系里倾向于压下自己的需求。",
+      "content": "用户意识到自己可能因为担心麻烦 Alex，而没有表达真实想法。",
+      "source_quote": "我好像总是怕麻烦 Alex，所以很多事情没说。",
+      "confidence": 0.88,
+      "sensitivity": "private",
+      "is_ai_inferred": false,
+      "related_people": [
+        {
+          "display_name": "Alex",
+          "matched_person_id": "demo-alex",
+          "match_confidence": 0.91,
+          "relation_type": "about"
+        }
+      ],
+      "themes": [
+        { "name": "自我表达", "confidence": 0.9 },
+        { "name": "关系边界", "confidence": 0.82 }
+      ],
+      "follow_up_questions": [
+        "最近哪段关系最容易触发这种感觉？",
+        "你担心表达后对方会有什么反应？"
+      ],
+      "suggested_actions": []
+    }
+  ],
+  "person_fact_proposals": [],
+  "reminder_proposals": [],
+  "gift_signal_proposals": [],
+  "conflicts": [],
+  "follow_up_questions": [
+    "要不要把这条记忆关联到 Alex 的关系时间线？"
+  ]
+}

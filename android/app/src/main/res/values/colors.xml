@@ -1,0 +1,7 @@
+<resources>
+    <color name="memoria_ink">#0A231C</color>
+    <color name="memoria_panel">#17372D</color>
+    <color name="memoria_canvas">#EEF2EF</color>
+    <color name="memoria_sage">#78937E</color>
+    <color name="memoria_gold">#C8A551</color>
+</resources>
