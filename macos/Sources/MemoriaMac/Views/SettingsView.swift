@@ -85,6 +85,16 @@ struct SettingsView: View {
             Toggle(isChinese ? "默认隐藏敏感记忆" : "Hide sensitive memories by default", isOn: $hideSensitiveByDefault)
             Toggle(isChinese ? "开发者日志" : "Developer logs", isOn: $developerLogs)
 
+            if developerLogs {
+                Section(isChinese ? "开发者日志" : "Developer Logs") {
+                    DeveloperLogPanel(
+                        snapshot: store.developerLogSnapshot,
+                        language: store.settings.language,
+                        onRefresh: store.refreshDeveloperLogs
+                    )
+                }
+            }
+
             Section(isChinese ? "本地数据" : "Local Data") {
                 Text(isChinese
                     ? "导出会生成完整本地数据副本，包含私密记忆、朋友档案、关系边、提醒和礼物建议；不会包含 DeepSeek API key。"
@@ -142,6 +152,16 @@ struct SettingsView: View {
         }
         .onChange(of: allowLocalNotifications) { _, enabled in
             syncNotifications(enabled: enabled)
+        }
+        .onChange(of: developerLogs) { _, enabled in
+            if enabled {
+                store.refreshDeveloperLogs()
+            }
+        }
+        .onAppear {
+            if developerLogs {
+                store.refreshDeveloperLogs()
+            }
         }
     }
 
@@ -270,6 +290,156 @@ private struct ImportPreviewMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.035))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct DeveloperLogPanel: View {
+    let snapshot: DeveloperLogSnapshot
+    let language: LanguagePreference
+    let onRefresh: () -> Void
+
+    private var isChinese: Bool {
+        resolvedLanguage(language) == .zhCN
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(isChinese ? "本机诊断面板" : "Local Diagnostics", systemImage: "stethoscope")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    onRefresh()
+                } label: {
+                    Label(isChinese ? "刷新" : "Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Text(isChinese
+                ? "只显示本地运行状态、数据库计数和审计事件摘要；不会显示 DeepSeek API key 或完整请求内容。"
+                : "Shows local runtime state, database counts, and audit summaries only. It never displays DeepSeek API keys or full prompts."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(snapshot.databaseMetrics) { metric in
+                    DeveloperLogMetricView(metric: metric)
+                }
+            }
+
+            DeveloperLogEntryGroup(
+                title: isChinese ? "运行状态" : "Runtime",
+                entries: snapshot.runtimeEntries,
+                language: language
+            )
+
+            DeveloperLogEntryGroup(
+                title: isChinese ? "最近事件" : "Recent Events",
+                entries: snapshot.recentEntries,
+                language: language
+            )
+
+            Text((isChinese ? "生成时间：" : "Generated: ") + (snapshot.generatedAt.isEmpty ? "-" : snapshot.generatedAt))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+private struct DeveloperLogMetricView: View {
+    let metric: DeveloperLogMetric
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(metric.label)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            Text("\(metric.value)")
+                .font(.title3.monospacedDigit().weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct DeveloperLogEntryGroup: View {
+    let title: String
+    let entries: [DeveloperLogEntry]
+    let language: LanguagePreference
+
+    private var isChinese: Bool {
+        resolvedLanguage(language) == .zhCN
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+
+            if entries.isEmpty {
+                Text(isChinese ? "暂无事件；刷新后会继续显示当前运行状态。" : "No events yet. Refresh will continue showing current runtime state.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(entries.prefix(8)) { entry in
+                    DeveloperLogEntryRow(entry: entry)
+                }
+            }
+        }
+    }
+}
+
+private struct DeveloperLogEntryRow: View {
+    let entry: DeveloperLogEntry
+
+    private var levelColor: Color {
+        switch entry.level {
+        case .info:
+            return .secondary
+        case .warning:
+            return .orange
+        case .error:
+            return .red
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(levelColor)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(entry.title)
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Text(entry.createdAt)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+
+                Text(entry.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(8)
         .background(Color.primary.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }

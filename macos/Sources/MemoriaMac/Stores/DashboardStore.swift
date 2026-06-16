@@ -14,6 +14,8 @@ public final class DashboardStore: ObservableObject {
     @Published public var agendaAssistantPrompt = "今天约了人，帮我安排日历和行程，不要让我忘记。"
     @Published public private(set) var agendaAssistantPlan = AgendaAssistantPlan.empty
     @Published public private(set) var memoryOrganizationSuggestions: [MemoryOrganizationSuggestion] = []
+    @Published public private(set) var captureProgress = CaptureProgressState.idle
+    @Published public private(set) var developerLogSnapshot = DeveloperLogSnapshot.empty
     @Published public var settings = NativeSettings()
     @Published public var statusMessage = ""
 
@@ -74,6 +76,7 @@ public final class DashboardStore: ObservableObject {
                 database: database
             )
             selectedPersonID = loadedSnapshot.people.first?.id
+            refreshDeveloperLogs()
             return
         } catch {
             database = nil
@@ -91,10 +94,15 @@ public final class DashboardStore: ObservableObject {
         relationshipTagPriorities = snapshot.relationshipTagPriorities
         themeNamesByMemoryID = [:]
         selectedPersonID = snapshot.people.first?.id
+        refreshDeveloperLogs()
     }
 
     public var copy: NativeCopy {
         nativeCopy(for: settings.language)
+    }
+
+    public var isCapturing: Bool {
+        captureProgress.phase.isRunning
     }
 
     public var currentSection: AppSection {
@@ -362,14 +370,61 @@ public final class DashboardStore: ObservableObject {
     public func quickCapture() {
         let trimmed = quickCaptureText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !trimmed.isEmpty else {
+        guard !trimmed.isEmpty, !isCapturing else {
             return
         }
 
+        let mode = selectedCaptureMode
         quickCaptureText = ""
-        selectedReviewCategory = selectedCaptureMode.reviewCategory
+        captureProgress = .saving(reviewCategory: mode.reviewCategory)
+        selectedReviewCategory = mode.reviewCategory
         sidebarSelection = .section(.aiReview)
-        Task { await captureForReview(trimmed) }
+        Task { await captureForReview(trimmed, mode: mode) }
+    }
+
+    public func resetCaptureProgress() {
+        guard !isCapturing else { return }
+        captureProgress = .idle
+    }
+
+    public func refreshDeveloperLogs() {
+        let runtimeEntries = makeRuntimeDeveloperLogEntries()
+        guard let database else {
+            developerLogSnapshot = DeveloperLogSnapshot(
+                generatedAt: memoriaTimestamp(),
+                databaseMetrics: [],
+                runtimeEntries: runtimeEntries + [
+                    DeveloperLogEntry(
+                        id: "database-unavailable",
+                        title: "Database unavailable",
+                        detail: "The local SQLite store is not available in this store instance.",
+                        createdAt: memoriaTimestamp(),
+                        level: .warning
+                    )
+                ],
+                recentEntries: []
+            )
+            return
+        }
+
+        do {
+            developerLogSnapshot = try database.loadDeveloperLogSnapshot(runtimeEntries: runtimeEntries)
+        } catch {
+            developerLogSnapshot = DeveloperLogSnapshot(
+                generatedAt: memoriaTimestamp(),
+                databaseMetrics: [],
+                runtimeEntries: runtimeEntries + [
+                    DeveloperLogEntry(
+                        id: "developer-log-refresh-error",
+                        title: "Developer log refresh failed",
+                        detail: developerLogRedactedText(error.localizedDescription),
+                        createdAt: memoriaTimestamp(),
+                        level: .error
+                    )
+                ],
+                recentEntries: []
+            )
+        }
     }
 
     public func updateSettings(_ settings: NativeSettings) {
@@ -543,16 +598,20 @@ public final class DashboardStore: ObservableObject {
         }
     }
 
-    public func captureForReview(_ text: String) async {
+    public func captureForReview(_ text: String, mode: WorkspaceMode? = nil) async {
+        let captureMode = mode ?? selectedCaptureMode
+        let reviewCategory = captureMode.reviewCategory
         do {
             guard let database else { return }
-            selectedReviewCategory = selectedCaptureMode.reviewCategory
+            captureProgress = .saving(reviewCategory: reviewCategory)
+            selectedReviewCategory = reviewCategory
             sidebarSelection = .section(.aiReview)
             let rawEntries = RawEntryRepository(database: database)
             let pending = PendingUpdateRepository(database: database)
             let themes = ThemeRepository(database: database)
 
             let rawEntry = try rawEntries.create(inputType: .text, rawText: text)
+            captureProgress = .thinking(reviewCategory: reviewCategory)
             let key = apiKeyReader.map { $0() } ?? keyStore.read()
             let knownPeople = people
             let currentSettings = settings
@@ -579,10 +638,12 @@ public final class DashboardStore: ObservableObject {
                 )
                 fallbackMessage = error.localizedDescription
             }
-            for proposal in response.memoryProposals {
+            captureProgress = .organizing(reviewCategory: reviewCategory)
+            let constrainedResponse = response.constrained(to: captureMode, rawEntry: rawEntry)
+            for proposal in constrainedResponse.memoryProposals {
                 _ = try pending.createMemoryAtomProposal(sourceEntryID: rawEntry.id, proposal: proposal)
             }
-            for proposal in response.personFactProposals {
+            for proposal in constrainedResponse.personFactProposals {
                 _ = try pending.createPersonProfilePatchProposal(sourceEntryID: rawEntry.id, proposal: proposal)
             }
 
@@ -590,15 +651,23 @@ public final class DashboardStore: ObservableObject {
                 statusMessage = resolvedLanguage(settings.language) == .zhCN
                     ? "真实 AI 返回不可用，已保存原文并生成本地待确认草稿。原因：\(fallbackMessage)"
                     : "Remote AI was unavailable. Saved the raw entry and created a local review draft. Reason: \(fallbackMessage)"
+                captureProgress = .failed(reviewCategory: reviewCategory, message: statusMessage)
             } else if key == nil {
-                statusMessage = "Raw entry saved. Created mocked AI proposal locally; add a DeepSeek key in Settings for real extraction."
+                statusMessage = resolvedLanguage(settings.language) == .zhCN
+                    ? "已送到整理台 · \(reviewCategory.title(for: settings.language))。当前使用本地 AI 草稿；可在设置中添加 DeepSeek key。"
+                    : "Sent to Review · \(reviewCategory.title(for: settings.language)). Created a local AI draft; add a DeepSeek key in Settings for real extraction."
+                captureProgress = .delivered(reviewCategory: reviewCategory)
             } else {
-                statusMessage = "Raw entry saved. Created \(response.memoryProposals.count + response.personFactProposals.count) pending AI proposal."
+                statusMessage = resolvedLanguage(settings.language) == .zhCN
+                    ? "已送到整理台 · \(reviewCategory.title(for: settings.language))。"
+                    : "Sent to Review · \(reviewCategory.title(for: settings.language))."
+                captureProgress = .delivered(reviewCategory: reviewCategory)
             }
 
             try reloadSnapshot()
         } catch {
             statusMessage = error.localizedDescription
+            captureProgress = .failed(reviewCategory: reviewCategory, message: error.localizedDescription)
         }
     }
 
@@ -642,6 +711,7 @@ public final class DashboardStore: ObservableObject {
             for: snapshot.memoryAtoms,
             database: database
         )
+        pruneSelectedSelfIndexThemeIfNeeded()
     }
 
     public func memories(for person: FriendPerson) -> [MemoryAtom] {
@@ -657,6 +727,15 @@ public final class DashboardStore: ObservableObject {
 
     public func themeNames(for memory: MemoryAtom) -> [String] {
         themeNamesByMemoryID[memory.id] ?? []
+    }
+
+    public func selectAllSelfIndexThemes() {
+        selectedSelfIndexThemeName = nil
+    }
+
+    public func selectSelfIndexTheme(named name: String?) {
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        selectedSelfIndexThemeName = trimmedName.isEmpty ? nil : trimmedName
     }
 
     public func addSelfIndexTheme(name: String, description: String?) {
@@ -1018,6 +1097,7 @@ public final class DashboardStore: ObservableObject {
     }
 
     public func autoOrganizeMemories() {
+        pruneSelectedSelfIndexThemeIfNeeded()
         memoryOrganizationSuggestions = memoryOrganizer.suggestions(
             for: memoryAtoms,
             language: settings.language
@@ -1039,6 +1119,50 @@ private extension DashboardStore {
         }
     }
 
+    func makeRuntimeDeveloperLogEntries() -> [DeveloperLogEntry] {
+        let timestamp = memoriaTimestamp()
+        var entries = [
+            DeveloperLogEntry(
+                id: "app-state",
+                title: "App state",
+                detail: [
+                    "section=\(currentSection.rawValue)",
+                    "capture_mode=\(selectedCaptureMode.rawValue)",
+                    "review_category=\(selectedReviewCategory?.rawValue ?? "overview")",
+                    "capture_phase=\(captureProgress.phase.rawValue)"
+                ].joined(separator: " · "),
+                createdAt: timestamp
+            ),
+            DeveloperLogEntry(
+                id: "data-counts",
+                title: "Loaded data counts",
+                detail: [
+                    "people=\(people.count)",
+                    "pending_updates=\(pendingUpdates.count)",
+                    "memory_atoms=\(memoryAtoms.count)",
+                    "themes=\(themes.count)",
+                    "reminders=\(reminders.count)",
+                    "relationship_edges=\(relationshipEdges.count)"
+                ].joined(separator: " · "),
+                createdAt: timestamp
+            )
+        ]
+
+        if !statusMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            entries.append(
+                DeveloperLogEntry(
+                    id: "status-message",
+                    title: "Status message",
+                    detail: developerLogRedactedText(statusMessage),
+                    createdAt: timestamp,
+                    level: statusMessage.localizedCaseInsensitiveContains("error") ? .warning : .info
+                )
+            )
+        }
+
+        return entries
+    }
+
     func filterBySelectedSelfIndexTheme(_ memories: [MemoryAtom]) -> [MemoryAtom] {
         guard let selectedSelfIndexThemeName,
               !selectedSelfIndexThemeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1046,6 +1170,18 @@ private extension DashboardStore {
         }
         return memories.filter { memory in
             (themeNamesByMemoryID[memory.id] ?? []).contains(selectedSelfIndexThemeName)
+        }
+    }
+
+    func pruneSelectedSelfIndexThemeIfNeeded() {
+        guard let selectedSelfIndexThemeName else { return }
+        let trimmedName = selectedSelfIndexThemeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            self.selectedSelfIndexThemeName = nil
+            return
+        }
+        if !themes.contains(where: { $0.name == trimmedName }) {
+            self.selectedSelfIndexThemeName = nil
         }
     }
 
@@ -1185,6 +1321,128 @@ private func destinationSection(for category: ReviewCategory) -> AppSection {
     case .schedule:
         return .schedule
     }
+}
+
+private extension ExtractMemoryResponse {
+    func constrained(to mode: WorkspaceMode, rawEntry: RawEntry) -> ExtractMemoryResponse {
+        switch mode {
+        case .schedule:
+            let proposals = memoryProposals.isEmpty
+                ? [MemoryAtomProposal.scheduleFallback(rawEntry: rawEntry)]
+                : memoryProposals.map { $0.asScheduleProposal(rawEntry: rawEntry) }
+            return ExtractMemoryResponse(
+                entrySummary: entrySummary,
+                memoryProposals: proposals,
+                personFactProposals: [],
+                reminderProposals: reminderProposals,
+                giftSignalProposals: giftSignalProposals,
+                conflicts: conflicts,
+                followUpQuestions: followUpQuestions
+            )
+
+        case .friendDossier:
+            let proposals = memoryProposals.filter { proposal in
+                !proposal.isDuplicatedByProfilePatch(personFactProposals)
+            }
+            return ExtractMemoryResponse(
+                entrySummary: entrySummary,
+                memoryProposals: proposals,
+                personFactProposals: personFactProposals,
+                reminderProposals: reminderProposals,
+                giftSignalProposals: giftSignalProposals,
+                conflicts: conflicts,
+                followUpQuestions: followUpQuestions
+            )
+
+        case .selfSearch:
+            return self
+        }
+    }
+}
+
+private extension MemoryAtomProposal {
+    static func scheduleFallback(rawEntry: RawEntry) -> MemoryAtomProposal {
+        MemoryAtomProposal(
+            proposalType: .memoryAtom,
+            memoryType: .reminderSource,
+            title: "行程安排：\(compactCaptureText(rawEntry.rawText))",
+            summary: rawEntry.rawText,
+            content: rawEntry.rawText,
+            sourceQuote: rawEntry.rawText,
+            confidence: 0.82,
+            sensitivity: .normal,
+            isAIInferred: false,
+            relatedPeople: [],
+            themes: [ThemeProposal(name: "提醒事项", confidence: 0.86)],
+            followUpQuestions: ["要不要把这条内容加入行程安排？"],
+            suggestedActions: []
+        )
+    }
+
+    func asScheduleProposal(rawEntry: RawEntry) -> MemoryAtomProposal {
+        if reviewCategory == .schedule {
+            return self
+        }
+        return MemoryAtomProposal(
+            proposalType: proposalType,
+            memoryType: .reminderSource,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "行程安排：\(compactCaptureText(rawEntry.rawText))" : title,
+            summary: summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rawEntry.rawText : summary,
+            content: content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rawEntry.rawText : content,
+            sourceQuote: sourceQuote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rawEntry.rawText : sourceQuote,
+            confidence: confidence,
+            sensitivity: sensitivity,
+            isAIInferred: isAIInferred,
+            relatedPeople: relatedPeople,
+            themes: themes.isEmpty ? [ThemeProposal(name: "提醒事项", confidence: 0.86)] : themes,
+            relationshipEdgeProposals: nil,
+            followUpQuestions: followUpQuestions,
+            suggestedActions: suggestedActions
+        )
+    }
+
+    var reviewCategory: ReviewCategory {
+        ReviewCategory.inferred(from: self)
+    }
+
+    func isDuplicatedByProfilePatch(_ patches: [PersonProfilePatchProposal]) -> Bool {
+        guard memoryType == .personFact, !patches.isEmpty else { return false }
+        let normalizedSource = sourceQuote.normalizedCaptureDedupeText
+        return patches.contains { patch in
+            guard patch.sourceQuote.normalizedCaptureDedupeText == normalizedSource else { return false }
+            let sameTarget = relatedPeople.isEmpty || relatedPeople.contains { person in
+                person.matchedPersonID == patch.targetPersonID || person.displayName == patch.targetDisplayName
+            }
+            guard sameTarget else { return false }
+            let proposedValue = patch.proposedValue.normalizedCaptureDedupeText
+            return proposedValue.isEmpty ||
+                summary.normalizedCaptureDedupeText.contains(proposedValue) ||
+                content.normalizedCaptureDedupeText.contains(proposedValue) ||
+                proposedValue.contains(summary.normalizedCaptureDedupeText)
+        }
+    }
+}
+
+private extension String {
+    var normalizedCaptureDedupeText: String {
+        lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+    }
+}
+
+private func compactCaptureText(_ text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+    guard trimmed.count > 32 else { return trimmed }
+    return String(trimmed.prefix(29)) + "..."
+}
+
+private func developerLogRedactedText(_ text: String) -> String {
+    var redacted = text.replacingOccurrences(of: "api_key", with: "credential", options: .caseInsensitive)
+    redacted = redacted.replacingOccurrences(of: "apikey", with: "credential", options: .caseInsensitive)
+    redacted = redacted.replacingOccurrences(of: "token", with: "credential", options: .caseInsensitive)
+    return redacted
 }
 
 private func sortedReminders(_ reminders: [ReminderItem]) -> [ReminderItem] {

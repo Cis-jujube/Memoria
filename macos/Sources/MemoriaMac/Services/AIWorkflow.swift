@@ -78,6 +78,77 @@ public struct RouteInputResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AIWorkflowToolDefinition: Codable, Equatable, Sendable {
+    public let name: String
+    public let purpose: String
+    public let inputSchema: String
+    public let outputPolicy: String
+    public let availability: String
+    public let requiresUserApproval: Bool
+
+    public init(
+        name: String,
+        purpose: String,
+        inputSchema: String,
+        outputPolicy: String,
+        availability: String,
+        requiresUserApproval: Bool
+    ) {
+        self.name = name
+        self.purpose = purpose
+        self.inputSchema = inputSchema
+        self.outputPolicy = outputPolicy
+        self.availability = availability
+        self.requiresUserApproval = requiresUserApproval
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case purpose
+        case inputSchema = "input_schema"
+        case outputPolicy = "output_policy"
+        case availability
+        case requiresUserApproval = "requires_user_approval"
+    }
+}
+
+public enum AIWorkflowToolCatalog {
+    public static let extractionTools: [AIWorkflowToolDefinition] = [
+        AIWorkflowToolDefinition(
+            name: "memory_search",
+            purpose: "Search confirmed local memories and friend dossiers before proposing profile or relationship updates.",
+            inputSchema: #"{"query":"string","memory_type":"optional string","person_id":"optional string","theme_name":"optional string"}"#,
+            outputPolicy: "Use only returned local-memory snippets with source quotes. Never invent missing facts.",
+            availability: "enabled_local",
+            requiresUserApproval: false
+        ),
+        AIWorkflowToolDefinition(
+            name: "core_tag_resolver",
+            purpose: "Map a self-reflection note to existing core tags, or suggest a new tag when none fit.",
+            inputSchema: #"{"raw_text":"string","known_core_tags":["name + description"]}"#,
+            outputPolicy: "Prefer existing known_core_tags by exact name. New tag names remain pending until review.",
+            availability: "enabled_local",
+            requiresUserApproval: false
+        ),
+        AIWorkflowToolDefinition(
+            name: "web_search",
+            purpose: "Search the public web to verify external facts only when the user explicitly enables an external search provider.",
+            inputSchema: #"{"query":"string","recency_days":"optional integer"}"#,
+            outputPolicy: "Do not use or cite web facts unless a tool result is present in this workflow input.",
+            availability: "disabled_until_search_provider_configured",
+            requiresUserApproval: true
+        ),
+        AIWorkflowToolDefinition(
+            name: "web_page_fetch",
+            purpose: "Read a specific public URL supplied by the user or search results when external browsing is enabled.",
+            inputSchema: #"{"url":"string"}"#,
+            outputPolicy: "Use short source-backed summaries only. Never store raw pages as memory without review.",
+            availability: "disabled_until_search_provider_configured",
+            requiresUserApproval: true
+        )
+    ]
+}
+
 public struct PromptBuilder: Sendable {
     public init() {}
 
@@ -95,16 +166,26 @@ public struct PromptBuilder: Sendable {
     }
 
     public func extractMemoryPrompt(rawEntry: RawEntry, knownPeople: [FriendPerson], knownThemes: [Theme]) -> [DeepSeekChatRequest.Message] {
-        let people = knownPeople.map { person in
-            "{\"id\":\"\(person.id)\",\"display_name\":\"\(person.displayName)\",\"nickname\":\"\(person.nickname)\",\"aliases\":[\"\(person.englishName)\"],\"manual_closeness_level\":\(person.manualClosenessLevel)}"
-        }.joined(separator: ",")
-        let themes = knownThemes.map(\.name).joined(separator: ", ")
+        let workflowInput = ExtractMemoryWorkflowInput(
+            rawEntryID: rawEntry.id,
+            rawText: rawEntry.rawText,
+            knownPeople: knownPeople.map(KnownPersonContext.init(person:)),
+            knownCoreTags: knownThemes.map(KnownCoreTagContext.init(theme:)),
+            availableTools: AIWorkflowToolCatalog.extractionTools,
+            workflowNotes: [
+                "Reuse known_core_tags by exact name when the note fits a current core tag.",
+                "If no existing core tag fits a self-reflection, propose a concise new theme name inside memory_proposals[].themes.",
+                "External web tools are explicit opt-in boundaries; ignore web facts unless a tool result is supplied."
+            ]
+        )
+        let workflowInputJSON = Self.encodeWorkflowInput(workflowInput)
         let profileSchema = PersonProfileCategory.aiSchemaDescription
         return [
             .init(
                 role: "system",
                 content: """
                 你是 Memoria 的个人记忆整理助手。你的任务是把用户的自由输入整理为结构化、可确认、可追溯的记忆建议。
+                按 Dify-style workflow/tool contract 工作：先阅读 workflow input，再只在工具边界允许的范围内使用 local memory、core tag resolver 或外部 web 工具结果。
 
                 规则：
                 1. 只抽取用户文本明确表达或强烈支持的信息。
@@ -122,6 +203,8 @@ public struct PromptBuilder: Sendable {
                 13. 如果原文明确支持两个人之间的关系边，只能放入 relationship_edge_proposals，且必须包含 source_quote；批准前不会写入关系星图。
                 14. relationship_edge_proposals 不能表达亲近等级变化，不能修改 manual_closeness_level。
                 15. relationship_edge_proposals 可以提供 tags 和 ai_primary_tag；tags 是自由关系标签，ai_primary_tag 只能从 tags 里选一个最能概括当前关系的标签。
+                16. 自我检索标签优先使用 workflow input 中的 known_core_tags.name；新增核心标签只能作为 themes 建议，等待用户确认或编辑。
+                17. web_search 和 web_page_fetch 只有在 workflow input 附带 tool result 时才算可用；没有工具结果时不能声称已联网搜索或验证。
 
                 profile category schema:
                 \(profileSchema)
@@ -131,11 +214,75 @@ public struct PromptBuilder: Sendable {
             ),
             .init(
                 role: "user",
-                content: """
-                {"raw_entry_id":"\(rawEntry.id)","raw_text":"\(rawEntry.rawText)","known_people":[\(people)],"known_themes":"\(themes)"}
-                """
+                content: workflowInputJSON
             )
         ]
+    }
+
+    private static func encodeWorkflowInput(_ input: ExtractMemoryWorkflowInput) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(input),
+              let json = String(data: data, encoding: .utf8) else {
+            return #"{"raw_text":"","known_people":[],"known_core_tags":[],"available_tools":[]}"#
+        }
+        return json
+    }
+}
+
+private struct ExtractMemoryWorkflowInput: Encodable, Sendable {
+    let rawEntryID: String
+    let rawText: String
+    let knownPeople: [KnownPersonContext]
+    let knownCoreTags: [KnownCoreTagContext]
+    let availableTools: [AIWorkflowToolDefinition]
+    let workflowNotes: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case rawEntryID = "raw_entry_id"
+        case rawText = "raw_text"
+        case knownPeople = "known_people"
+        case knownCoreTags = "known_core_tags"
+        case availableTools = "available_tools"
+        case workflowNotes = "workflow_notes"
+    }
+}
+
+private struct KnownPersonContext: Encodable, Sendable {
+    let id: String
+    let displayName: String
+    let nickname: String
+    let aliases: [String]
+    let manualClosenessLevel: Int
+
+    init(person: FriendPerson) {
+        id = person.id
+        displayName = person.displayName
+        nickname = person.nickname
+        aliases = [person.englishName, person.nickname]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        manualClosenessLevel = person.manualClosenessLevel
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case nickname
+        case aliases
+        case manualClosenessLevel = "manual_closeness_level"
+    }
+}
+
+private struct KnownCoreTagContext: Encodable, Sendable {
+    let id: String
+    let name: String
+    let description: String?
+
+    init(theme: Theme) {
+        id = theme.id
+        name = theme.name
+        description = theme.description
     }
 }
 
@@ -150,13 +297,16 @@ public struct AIWorkflowService: Sendable {
 
     private let parser: AIJSONParser
     private let remoteExtractMemory: RemoteExtractMemory
+    private let remoteTimeoutNanoseconds: UInt64
 
     public init(
         parser: AIJSONParser = AIJSONParser(),
         deepSeek: DeepSeekClient = DeepSeekClient(),
-        remoteExtractMemory: RemoteExtractMemory? = nil
+        remoteExtractMemory: RemoteExtractMemory? = nil,
+        remoteTimeoutNanoseconds: UInt64 = 35_000_000_000
     ) {
         self.parser = parser
+        self.remoteTimeoutNanoseconds = remoteTimeoutNanoseconds
         self.remoteExtractMemory = remoteExtractMemory ?? { rawEntry, knownPeople, knownThemes, apiKey, settings in
             try await deepSeek.extractMemory(
                 rawEntry: rawEntry,
@@ -195,13 +345,17 @@ public struct AIWorkflowService: Sendable {
         settings: NativeSettings
     ) async throws -> ExtractMemoryResponse {
         if let apiKey, !apiKey.isEmpty {
-            return try await remoteExtractMemory(rawEntry, knownPeople, knownThemes, apiKey, settings)
+            return try await withRemoteExtractionTimeout(nanoseconds: remoteTimeoutNanoseconds) {
+                try await remoteExtractMemory(rawEntry, knownPeople, knownThemes, apiKey, settings)
+            }
         }
 
-        return try parser.parseExtractMemoryResponse(data: mockExtractMemoryData(for: rawEntry, knownPeople: knownPeople))
+        return try parser.parseExtractMemoryResponse(
+            data: mockExtractMemoryData(for: rawEntry, knownPeople: knownPeople, knownThemes: knownThemes)
+        )
     }
 
-    private func mockExtractMemoryData(for rawEntry: RawEntry, knownPeople: [FriendPerson]) throws -> Data {
+    private func mockExtractMemoryData(for rawEntry: RawEntry, knownPeople: [FriendPerson], knownThemes: [Theme]) throws -> Data {
         let text = rawEntry.rawText
         let matchedPerson = matchedPerson(in: text, knownPeople: knownPeople)
         let personName = matchedPerson?.displayName ?? "Memory"
@@ -228,7 +382,7 @@ public struct AIWorkflowService: Sendable {
                     )
                 ]
             } ?? [],
-            themes: fallbackThemes(for: text, memoryType: memoryType),
+            themes: fallbackThemes(for: text, memoryType: memoryType, knownThemes: knownThemes),
             followUpQuestions: [fallbackFollowUpQuestion(for: personName, memoryType: memoryType)],
             suggestedActions: []
         )
@@ -243,6 +397,32 @@ public struct AIWorkflowService: Sendable {
             followUpQuestions: proposal.followUpQuestions
         )
         return try JSONEncoder().encode(response)
+    }
+}
+
+private func withRemoteExtractionTimeout<T: Sendable>(
+    nanoseconds: UInt64,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: nanoseconds)
+            throw LocalAIError.timeout
+        }
+
+        do {
+            guard let result = try await group.next() else {
+                throw LocalAIError.timeout
+            }
+            group.cancelAll()
+            return result
+        } catch {
+            group.cancelAll()
+            throw error
+        }
     }
 }
 
@@ -302,29 +482,92 @@ private func fallbackTitle(for text: String, personName: String, memoryType: Mem
     }
 }
 
-private func fallbackThemes(for text: String, memoryType: MemoryAtomType) -> [ThemeProposal] {
+private func fallbackThemes(for text: String, memoryType: MemoryAtomType, knownThemes: [Theme]) -> [ThemeProposal] {
+    let fallbackNames: [String]
     switch memoryType {
     case .personFact:
         if containsAny(["吃", "喝", "忌口", "过敏", "food", "drink"], in: text) {
-            return [
-                ThemeProposal(name: "饮食偏好", confidence: 0.9),
-                ThemeProposal(name: "朋友事实", confidence: 0.84)
-            ]
+            fallbackNames = ["饮食偏好", "朋友事实"]
+        } else {
+            fallbackNames = ["朋友事实"]
         }
-        return [ThemeProposal(name: "朋友事实", confidence: 0.88)]
     case .giftSignal:
-        return [ThemeProposal(name: "礼物线索", confidence: 0.9)]
+        fallbackNames = ["礼物线索"]
     case .reminderSource:
-        return [ThemeProposal(name: "提醒事项", confidence: 0.86)]
+        fallbackNames = ["提醒事项"]
     case .relationshipMemory:
-        return [ThemeProposal(name: "关系观察", confidence: 0.86)]
+        fallbackNames = ["关系观察"]
     default:
-        return [
-            ThemeProposal(name: "自我表达", confidence: 0.9),
-            ThemeProposal(name: "关系边界", confidence: 0.82)
-        ]
+        fallbackNames = ["自我表达", "关系边界"]
+    }
+
+    let matchedKnownThemes = matchingKnownThemes(
+        for: text,
+        knownThemes: knownThemes,
+        preferredNames: fallbackNames
+    )
+    let names = matchedKnownThemes.isEmpty ? fallbackNames : matchedKnownThemes.map(\.name)
+    return names.enumerated().map { index, name in
+        ThemeProposal(name: name, confidence: max(0.72, 0.9 - Double(index) * 0.06))
     }
 }
+
+private func matchingKnownThemes(for text: String, knownThemes: [Theme], preferredNames: [String]) -> [Theme] {
+    let scoredThemes = knownThemes.compactMap { theme -> (theme: Theme, score: Int)? in
+        let score = themeMatchScore(theme, text: text, preferredNames: preferredNames)
+        return score > 0 ? (theme, score) : nil
+    }
+    return scoredThemes
+        .sorted { lhs, rhs in
+            if lhs.score != rhs.score {
+                return lhs.score > rhs.score
+            }
+            return lhs.theme.name < rhs.theme.name
+        }
+        .prefix(3)
+        .map(\.theme)
+}
+
+private func themeMatchScore(_ theme: Theme, text: String, preferredNames: [String]) -> Int {
+    let lowercasedText = text.lowercased()
+    var score = preferredNames.contains(theme.name) ? 3 : 0
+    for keyword in themeKeywords(theme) {
+        let normalizedKeyword = keyword.lowercased()
+        guard normalizedKeyword.count >= 2 else { continue }
+        if lowercasedText.contains(normalizedKeyword) {
+            score += normalizedKeyword == theme.name.lowercased() ? 8 : 5
+        }
+    }
+    return score
+}
+
+private func themeKeywords(_ theme: Theme) -> [String] {
+    var values = [theme.name]
+    if let description = theme.description {
+        values.append(contentsOf: description.components(separatedBy: themeDescriptionSeparators))
+    }
+    values.append(contentsOf: defaultCoreThemeKeywordHints[theme.name] ?? [])
+    return values
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) }
+        .filter { !$0.isEmpty }
+}
+
+private let themeDescriptionSeparators = CharacterSet(charactersIn: "，。、；;,. /\n\t（）()")
+
+private let defaultCoreThemeKeywordHints: [String: [String]] = [
+    "自我认知": ["自我", "习惯", "性格", "长期模式", "我发现自己"],
+    "情绪状态": ["情绪", "感受", "触发", "低落", "开心", "焦虑"],
+    "关系边界": ["边界", "拒绝", "压力", "期待", "相处", "麻烦"],
+    "亲密/朋友": ["朋友", "亲密", "陪伴", "信任", "友情"],
+    "学业成长": ["课程", "学习", "考试", "知识", "项目", "论文", "实验", "展示"],
+    "职业方向": ["实习", "研究", "职业", "能力", "公司", "工作"],
+    "创作灵感": ["灵感", "创作", "作品", "表达欲", "想法"],
+    "身体作息": ["睡眠", "饮食", "运动", "身体", "作息"],
+    "压力恢复": ["压力", "恢复", "休息", "支持系统"],
+    "价值判断": ["取舍", "原则", "偏好", "判断", "价值"],
+    "重要选择": ["决定", "选择", "备选", "路径", "影响"],
+    "生活审美": ["空间", "物品", "风格", "城市", "生活质感"]
+]
 
 private func fallbackProfilePatches(for text: String, matchedPerson: FriendPerson?) -> [PersonProfilePatchProposal] {
     guard let matchedPerson else { return [] }

@@ -26,24 +26,24 @@ struct CaptureView: View {
                     .background(.quinary)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                HStack(spacing: 8) {
-                    ForEach(chips, id: \.self) { chip in
-                        Button(chip) {
-                            store.quickCaptureText = store.quickCaptureText.isEmpty ? chipPrefix(chip) : store.quickCaptureText + " " + chipPrefix(chip)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
+                HStack {
                     Spacer()
 
                     Button {
                         store.quickCapture()
                     } label: {
-                        Label(isChinese ? "送到整理台" : "Send to Review", systemImage: "sparkles")
+                        Label(
+                            store.isCapturing ? (isChinese ? "整理中..." : "Organizing...") : (isChinese ? "送到整理台" : "Send to Review"),
+                            systemImage: store.isCapturing ? "hourglass" : "sparkles"
+                        )
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.quickCaptureText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(store.quickCaptureText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCapturing)
                     .keyboardShortcut(.return, modifiers: [.command])
+                }
+
+                if store.captureProgress.phase != .idle {
+                    CaptureProgressStatusView(progress: store.captureProgress, language: store.settings.language)
                 }
 
                 Text(isChinese ? "AI 不直接写最终档案；当前模式会打开对应整理台分区，批准一次即入库。" : "AI does not write final records directly. The selected mode opens its review desk category, and one approval saves it.")
@@ -63,10 +63,6 @@ struct CaptureView: View {
             .padding(24)
             .frame(maxWidth: 920, alignment: .leading)
         }
-    }
-
-    private var chips: [String] {
-        isChinese ? ["感悟", "朋友近况", "灵感", "提醒", "考试/约见", "随便说说"] : ["Reflection", "Friend update", "Idea", "Reminder", "Exam/meetup", "Free note"]
     }
 
     private var modePicker: some View {
@@ -90,12 +86,65 @@ struct CaptureView: View {
         .memoriaCard()
     }
 
-    private func chipPrefix(_ chip: String) -> String {
-        isChinese ? "\(chip)：" : "\(chip):"
+    private var isChinese: Bool {
+        resolvedLanguage(store.settings.language) == .zhCN
+    }
+}
+
+private struct CaptureProgressStatusView: View {
+    let progress: CaptureProgressState
+    let language: LanguagePreference
+
+    private var stages: [CaptureProgressPhase] {
+        [.savingSource, .thinking, .organizing, .delivered]
     }
 
     private var isChinese: Bool {
-        resolvedLanguage(store.settings.language) == .zhCN
+        resolvedLanguage(language) == .zhCN
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(progress.phase.title(for: language), systemImage: progress.phase == .failed ? "exclamationmark.triangle" : "sparkles")
+                    .font(.callout.weight(.semibold))
+
+                Spacer()
+
+                Text("\(Int(progress.progress * 100))%")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            ProgressView(value: progress.progress)
+                .progressViewStyle(.linear)
+
+            HStack(spacing: 8) {
+                ForEach(stages, id: \.rawValue) { stage in
+                    Text(stage.title(for: language))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(stage.defaultProgress <= progress.progress ? Color.memoriaSage : .secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Text(progress.detail(for: language))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(progress.phase == .failed ? Color.memoriaGold.opacity(0.1) : Color.memoriaSage.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(progress.phase == .failed ? Color.memoriaGold.opacity(0.24) : Color.memoriaSage.opacity(0.22), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(progress.phase.title(for: language))
+        .accessibilityValue(progress.detail(for: language))
     }
 }
 
@@ -292,7 +341,7 @@ struct MemoryPalaceView: View {
                     count: store.memoryAtoms.filter(\.isSelfSearchDefault).count,
                     isSelected: store.selectedSelfIndexThemeName == nil
                 ) {
-                    store.selectedSelfIndexThemeName = nil
+                    store.selectAllSelfIndexThemes()
                 }
 
                 ForEach(store.selfIndexThemeSummaries) { summary in
@@ -302,7 +351,7 @@ struct MemoryPalaceView: View {
                         count: summary.memoryCount,
                         isSelected: store.selectedSelfIndexThemeName == summary.theme.name
                     ) {
-                        store.selectedSelfIndexThemeName = summary.theme.name
+                        store.selectSelfIndexTheme(named: summary.theme.name)
                     } onEdit: {
                         editingThemeDraft = SelfIndexThemeDraft(theme: summary.theme)
                     } onDelete: {
@@ -502,6 +551,8 @@ private struct SelfIndexTagButton: View {
                 .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             if onEdit != nil || onDelete != nil {
                 Menu {

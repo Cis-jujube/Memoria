@@ -194,6 +194,211 @@ public enum WorkspaceMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum CaptureProgressPhase: String, Codable, CaseIterable, Sendable {
+    case idle
+    case savingSource
+    case thinking
+    case organizing
+    case delivered
+    case failed
+
+    public var isRunning: Bool {
+        switch self {
+        case .savingSource, .thinking, .organizing:
+            return true
+        case .idle, .delivered, .failed:
+            return false
+        }
+    }
+
+    public var defaultProgress: Double {
+        switch self {
+        case .idle:
+            return 0
+        case .savingSource:
+            return 0.16
+        case .thinking:
+            return 0.46
+        case .organizing:
+            return 0.78
+        case .delivered, .failed:
+            return 1
+        }
+    }
+
+    public func title(for language: LanguagePreference) -> String {
+        guard resolvedLanguage(language) == .zhCN else {
+            switch self {
+            case .idle:
+                return "Ready"
+            case .savingSource:
+                return "Saving source"
+            case .thinking:
+                return "AI thinking"
+            case .organizing:
+                return "Organizing"
+            case .delivered:
+                return "Sent to Review"
+            case .failed:
+                return "Needs local fallback"
+            }
+        }
+
+        switch self {
+        case .idle:
+            return "等待记录"
+        case .savingSource:
+            return "保存原文"
+        case .thinking:
+            return "AI 思考中"
+        case .organizing:
+            return "整理建议"
+        case .delivered:
+            return "已送到整理台"
+        case .failed:
+            return "已生成本地草稿"
+        }
+    }
+}
+
+public struct CaptureProgressState: Equatable, Sendable {
+    public let phase: CaptureProgressPhase
+    public let reviewCategory: ReviewCategory?
+    public let message: String?
+    public let progress: Double
+
+    public init(
+        phase: CaptureProgressPhase = .idle,
+        reviewCategory: ReviewCategory? = nil,
+        message: String? = nil,
+        progress: Double? = nil
+    ) {
+        self.phase = phase
+        self.reviewCategory = reviewCategory
+        self.message = message
+        self.progress = progress ?? phase.defaultProgress
+    }
+
+    public static let idle = CaptureProgressState()
+
+    public static func saving(reviewCategory: ReviewCategory) -> CaptureProgressState {
+        CaptureProgressState(phase: .savingSource, reviewCategory: reviewCategory)
+    }
+
+    public static func thinking(reviewCategory: ReviewCategory) -> CaptureProgressState {
+        CaptureProgressState(phase: .thinking, reviewCategory: reviewCategory)
+    }
+
+    public static func organizing(reviewCategory: ReviewCategory) -> CaptureProgressState {
+        CaptureProgressState(phase: .organizing, reviewCategory: reviewCategory)
+    }
+
+    public static func delivered(reviewCategory: ReviewCategory) -> CaptureProgressState {
+        CaptureProgressState(phase: .delivered, reviewCategory: reviewCategory)
+    }
+
+    public static func failed(reviewCategory: ReviewCategory, message: String) -> CaptureProgressState {
+        CaptureProgressState(phase: .failed, reviewCategory: reviewCategory, message: message)
+    }
+
+    public func detail(for language: LanguagePreference) -> String {
+        let isChinese = resolvedLanguage(language) == .zhCN
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return message
+        }
+        if let reviewCategory {
+            switch phase {
+            case .savingSource:
+                return isChinese ? "正在保存原文，预计几十秒内送到整理台。" : "Saving the source note. Usually delivered within tens of seconds."
+            case .thinking:
+                return isChinese ? "AI 正在阅读并判断应进入 \(reviewCategory.title(for: language))。" : "AI is reading and routing this into \(reviewCategory.title(for: language))."
+            case .organizing:
+                return isChinese ? "正在生成可确认建议，马上送到整理台。" : "Creating reviewable suggestions and sending them to Review."
+            case .delivered:
+                return isChinese ? "已送到整理台 · \(reviewCategory.title(for: language))" : "Sent to Review · \(reviewCategory.title(for: language))"
+            case .failed:
+                return isChinese ? "真实 AI 不可用，已保留原文并生成本地待确认草稿。" : "Remote AI was unavailable. Saved the source and created a local review draft."
+            case .idle:
+                return isChinese ? "写一段原文后送到整理台。" : "Write a source note, then send it to Review."
+            }
+        }
+        return isChinese ? "写一段原文后送到整理台。" : "Write a source note, then send it to Review."
+    }
+}
+
+public enum DeveloperLogLevel: String, Codable, Sendable {
+    case info
+    case warning
+    case error
+}
+
+public struct DeveloperLogMetric: Identifiable, Equatable, Sendable {
+    public let label: String
+    public let value: Int
+
+    public var id: String { label }
+
+    public init(label: String, value: Int) {
+        self.label = label
+        self.value = value
+    }
+}
+
+public struct DeveloperLogEntry: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let detail: String
+    public let createdAt: String
+    public let level: DeveloperLogLevel
+
+    public init(
+        id: String,
+        title: String,
+        detail: String,
+        createdAt: String,
+        level: DeveloperLogLevel = .info
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.createdAt = createdAt
+        self.level = level
+    }
+}
+
+public struct DeveloperLogSnapshot: Equatable, Sendable {
+    public let generatedAt: String
+    public let databaseMetrics: [DeveloperLogMetric]
+    public let runtimeEntries: [DeveloperLogEntry]
+    public let recentEntries: [DeveloperLogEntry]
+
+    public init(
+        generatedAt: String,
+        databaseMetrics: [DeveloperLogMetric],
+        runtimeEntries: [DeveloperLogEntry],
+        recentEntries: [DeveloperLogEntry]
+    ) {
+        self.generatedAt = generatedAt
+        self.databaseMetrics = databaseMetrics
+        self.runtimeEntries = runtimeEntries
+        self.recentEntries = recentEntries
+    }
+
+    public static let empty = DeveloperLogSnapshot(
+        generatedAt: "",
+        databaseMetrics: [],
+        runtimeEntries: [],
+        recentEntries: []
+    )
+
+    public var searchableText: String {
+        let metricText = databaseMetrics.map { "\($0.label):\($0.value)" }
+        let runtimeText = runtimeEntries.flatMap { [$0.title, $0.detail, $0.createdAt, $0.level.rawValue] }
+        let recentText = recentEntries.flatMap { [$0.title, $0.detail, $0.createdAt, $0.level.rawValue] }
+        return (metricText + runtimeText + recentText + [generatedAt]).joined(separator: "\n")
+    }
+}
+
 public struct SelfIndexThemePreset: Identifiable, Equatable, Sendable {
     public let name: String
     public let description: String

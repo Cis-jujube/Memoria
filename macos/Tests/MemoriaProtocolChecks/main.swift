@@ -25,6 +25,11 @@ private struct ProtocolChecker {
         try checkAgendaActionsPrioritizeTodayReminders()
         try checkPendingUpdatesRouteToThreeReviewCategoriesAndApproveOnce()
         try await checkCaptureModeSelectsTheReviewDeskCategory()
+        try await checkQuickCaptureProgressAndDuplicateSubmissionGuard()
+        try await checkCaptureRemoteFailureKeepsLocalFallbackDraft()
+        try await checkFriendDossierCaptureDeduplicatesProfileFactSuggestions()
+        try await checkScheduleCaptureModeForcesScheduleReviewAndReminderCreation()
+        try checkCaptureViewNoLongerShowsShortcutChips()
         try checkReminderDueDatePersistsAndLegacyRemindersLoad()
         try checkPeopleProfilesExposeEducationWorkAndRelationshipNetwork()
         try checkRelationshipEdgesArePersistedAndMutable()
@@ -42,6 +47,10 @@ private struct ProtocolChecker {
         try checkMemoryAutoOrganizerSuggestsCategories()
         try await checkSelfIndexTagsFilterTimelinePosts()
         try await checkSelfIndexManualTagsAndPlazaPostsAreMutable()
+        try await checkSelfIndexAllTagSelectionAndRefreshPruneStaleFilters()
+        try checkAIPromptIncludesWorkflowToolContextAndCoreTags()
+        try await checkLocalFallbackUsesKnownCoreThemesForSelfSearch()
+        try await checkDeveloperLogsExposeDiagnosticsAndAuditEvents()
         try await checkDashboardStoreAssistantsDoNotMutatePersistedData()
         try await checkProfileFactSearchRoutesToPeopleNotSelfReflection()
         try await checkBulkFriendCSVPreviewAndConfirmCreatesPeopleAndPatchReviews()
@@ -555,6 +564,129 @@ private struct ProtocolChecker {
         try expect(store.pendingUpdates.contains { $0.reviewCategory == .selfSearch }, "self-search mode should create self-search review items")
     }
 
+    @MainActor
+    private func checkQuickCaptureProgressAndDuplicateSubmissionGuard() async throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let workflow = AIWorkflowService(
+            remoteExtractMemory: { rawEntry, _, _, _, _ in
+                try await Task.sleep(nanoseconds: 150_000_000)
+                return try AIJSONParser().parseExtractMemoryResponse(content: """
+                {"entry_summary":"Jason 喜欢吃三文鱼。","memory_proposals":[{"proposal_type":"memory_atom","memory_type":"person_fact","title":"Jason Wu - Food Preference","summary":"喜欢吃三文鱼","content":"Jason 喜欢吃三文鱼。","source_quote":"Jason Wu 喜欢吃三文鱼。","confidence":0.88,"sensitivity":"normal","is_ai_inferred":false,"related_people":[{"display_name":"Jason Wu","matched_person_id":"demo-jason","match_confidence":0.91,"relation_type":"about"}],"themes":[{"name":"Food Preference","confidence":0.88}],"follow_up_questions":[],"suggested_actions":[]}],"person_fact_proposals":[],"reminder_proposals":[],"gift_signal_proposals":[],"conflicts":[],"follow_up_questions":[]}
+                """)
+            }
+        )
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: "quick-capture-progress.sqlite3",
+            seedDemoData: true,
+            aiWorkflow: workflow,
+            apiKeyReader: { "test-key" }
+        )
+
+        let initialPendingCount = store.pendingUpdates.count
+        store.selectedCaptureMode = .friendDossier
+        store.quickCaptureText = "Jason Wu 喜欢吃三文鱼。"
+        store.quickCapture()
+        store.quickCaptureText = "Jason Wu 喜欢吃三文鱼。"
+        store.quickCapture()
+
+        try expect(store.isCapturing, "quick capture should expose running state immediately")
+        try expect(store.captureProgress.phase != .idle, "quick capture should leave idle progress while running")
+        try await Task.sleep(nanoseconds: 260_000_000)
+
+        try expect(!store.isCapturing, "quick capture should clear running state after delivery")
+        try expect(store.captureProgress.phase == .delivered, "quick capture should finish in delivered phase")
+        try expect(store.captureProgress.progress == 1, "delivered capture progress should be complete")
+        try expect(store.selectedReviewCategory == .friendDossier, "quick capture should stay in the clicked mode review partition")
+        let createdUpdates = store.pendingUpdates.filter { $0.sourceEntryID != nil }
+        try expect(store.pendingUpdates.count == initialPendingCount + 1, "double quick capture should only create one pending update")
+        try expect(createdUpdates.filter { $0.summary.contains("三文鱼") }.count == 1, "double quick capture created duplicate salmon suggestions")
+    }
+
+    @MainActor
+    private func checkCaptureRemoteFailureKeepsLocalFallbackDraft() async throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let workflow = AIWorkflowService(
+            remoteExtractMemory: { _, _, _, _, _ in
+                throw LocalAIError.networkUnavailable
+            }
+        )
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: "capture-remote-failure-fallback.sqlite3",
+            seedDemoData: true,
+            aiWorkflow: workflow,
+            apiKeyReader: { "test-key" }
+        )
+
+        await store.captureForReview("明天提醒我准备考试。", mode: .schedule)
+
+        try expect(store.captureProgress.phase == .failed, "remote extraction errors should finish in failed progress state")
+        let fallbackUpdates = store.pendingUpdates.filter { $0.sourceEntryID != nil && ($0.summary.contains("考试") || $0.evidence.contains("考试")) }
+        try expect(!fallbackUpdates.isEmpty, "remote extraction errors should keep a local fallback review draft")
+        try expect(fallbackUpdates.allSatisfy { $0.reviewCategory == .schedule }, "fallback draft should keep the clicked capture mode")
+    }
+
+    @MainActor
+    private func checkFriendDossierCaptureDeduplicatesProfileFactSuggestions() async throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: "friend-dossier-dedupe.sqlite3",
+            seedDemoData: true,
+            apiKeyReader: { nil }
+        )
+
+        await store.captureForReview("Jason Wu 喜欢吃三文鱼。", mode: .friendDossier)
+
+        let salmonUpdates = store.pendingUpdates.filter {
+            $0.reviewCategory == .friendDossier &&
+            $0.title.contains("Jason") &&
+            ($0.summary.contains("三文鱼") || $0.evidence.contains("三文鱼"))
+        }
+        try expect(salmonUpdates.count == 1, "friend dossier capture should not create duplicate food preference cards")
+        try expect(salmonUpdates.first?.profilePatchProposal?.profileCategory == .foodPreference, "food preference should be represented by the profile patch card")
+    }
+
+    @MainActor
+    private func checkScheduleCaptureModeForcesScheduleReviewAndReminderCreation() async throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let filename = "schedule-mode-routing.sqlite3"
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: filename,
+            seedDemoData: true,
+            apiKeyReader: { nil }
+        )
+
+        await store.captureForReview("明天提醒我准备考试，还要安排和 May 约见。", mode: .schedule)
+
+        let scheduleUpdates = store.pendingUpdates.filter { $0.evidence.contains("考试") || $0.summary.contains("考试") }
+        try expect(!scheduleUpdates.isEmpty, "schedule capture should create a reviewable schedule item")
+        try expect(scheduleUpdates.allSatisfy { $0.reviewCategory == .schedule }, "schedule capture should not route exam/meeting notes to self search")
+        let update = try require(scheduleUpdates.first, "schedule update missing")
+        try expect(update.proposal?.memoryType == .reminderSource || update.proposal?.hasScheduleSignals == true, "schedule capture should use a reminder-capable memory type")
+
+        store.confirm(update)
+        try expect(store.sidebarSelection == SidebarSelection.section(.schedule), "approving a schedule item should open schedule")
+        try expect(store.reminders.contains { $0.title.contains("考试") || $0.context.contains("考试") }, "approved schedule item should create a reminder")
+    }
+
+    private func checkCaptureViewNoLongerShowsShortcutChips() throws {
+        let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appending(path: "Sources/MemoriaMac/Views/CaptureMemoryActionsViews.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        for removedChip in ["感悟", "朋友近况", "灵感", "考试/约见", "随便说说"] {
+            try expect(!source.contains("\"\(removedChip)\""), "capture view should not include shortcut chip \(removedChip)")
+        }
+        try expect(!source.contains("private var chips"), "capture view should remove the shortcut chip source")
+    }
+
     private func checkReminderDueDatePersistsAndLegacyRemindersLoad() throws {
         let tempDirectory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
@@ -946,6 +1078,115 @@ private struct ProtocolChecker {
         let updatedTheme = try require(store.themes.first { $0.name == "手动主题更新" }, "updated manual tag missing before delete")
         store.deleteSelfIndexTheme(updatedTheme)
         try expect(!store.themes.contains { $0.id == updatedTheme.id }, "manual self-index tag should be deletable")
+    }
+
+    @MainActor
+    private func checkSelfIndexAllTagSelectionAndRefreshPruneStaleFilters() throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: "self-index-selection.sqlite3",
+            seedDemoData: false
+        )
+
+        store.addSelfIndexTheme(name: "研究复盘", description: "读论文、实验和研究方向")
+        store.selectSelfIndexTheme(named: "研究复盘")
+        try expect(store.selectedSelfIndexThemeName == "研究复盘", "explicit tag selection should choose the requested core tag")
+
+        store.selectAllSelfIndexThemes()
+        try expect(store.selectedSelfIndexThemeName == nil, "all self plaza tag should clear the selected core tag")
+
+        store.selectSelfIndexTheme(named: "不存在的标签")
+        try expect(store.selectedSelfIndexThemeName == "不存在的标签", "stale selection setup should hold an unmatched tag before refresh")
+        store.autoOrganizeMemories()
+        try expect(store.selectedSelfIndexThemeName == nil, "refresh should prune stale self-index tag filters")
+    }
+
+    private func checkAIPromptIncludesWorkflowToolContextAndCoreTags() throws {
+        let rawEntry = RawEntry(
+            id: "entry-tool-context",
+            inputType: .text,
+            rawText: "今天读论文的时候发现自己更喜欢有明确问题意识的研究。",
+            sourceFileID: nil,
+            createdAt: memoriaTimestamp(),
+            updatedAt: memoriaTimestamp()
+        )
+        let theme = Theme(
+            id: "theme-research",
+            name: "研究复盘",
+            description: "读论文、实验和研究方向",
+            createdAt: memoriaTimestamp(),
+            updatedAt: memoriaTimestamp()
+        )
+
+        let messages = PromptBuilder().extractMemoryPrompt(rawEntry: rawEntry, knownPeople: [], knownThemes: [theme])
+        let systemPrompt = try require(messages.first?.content, "extract memory system prompt missing")
+        let userPrompt = try require(messages.last?.content, "extract memory user prompt missing")
+
+        try expect(systemPrompt.contains("workflow") && systemPrompt.contains("tool"), "AI prompt should describe a workflow/tool contract")
+        try expect(userPrompt.contains(#""known_core_tags""#), "AI user prompt should include structured core tags")
+        try expect(userPrompt.contains("研究复盘"), "AI prompt should include user-created core tag names")
+        try expect(userPrompt.contains("读论文、实验和研究方向"), "AI prompt should include user-created core tag descriptions")
+        try expect(userPrompt.contains(#""available_tools""#), "AI user prompt should include available tool definitions")
+        try expect(userPrompt.contains("web_search"), "AI tool context should advertise web search as an explicit tool boundary")
+    }
+
+    private func checkLocalFallbackUsesKnownCoreThemesForSelfSearch() async throws {
+        let rawEntry = RawEntry(
+            id: "entry-known-theme",
+            inputType: .text,
+            rawText: "今天课程项目复盘时，我发现自己适合先写实验记录再做展示。",
+            sourceFileID: nil,
+            createdAt: memoriaTimestamp(),
+            updatedAt: memoriaTimestamp()
+        )
+        let knownThemes = [
+            Theme(
+                id: "theme-academic-growth",
+                name: "学业成长",
+                description: "课程、学习策略、考试和知识成长",
+                createdAt: memoriaTimestamp(),
+                updatedAt: memoriaTimestamp()
+            )
+        ]
+
+        let response = try await AIWorkflowService().extractMemory(
+            rawEntry: rawEntry,
+            knownPeople: [],
+            knownThemes: knownThemes,
+            apiKey: nil,
+            settings: NativeSettings()
+        )
+
+        try expect(response.memoryProposals.first?.themes.contains { $0.name == "学业成长" } == true, "local fallback should reuse matching known core tags")
+    }
+
+    @MainActor
+    private func checkDeveloperLogsExposeDiagnosticsAndAuditEvents() async throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = DashboardStore(
+            databaseDirectory: tempDirectory,
+            databaseFilename: "developer-logs.sqlite3",
+            seedDemoData: true,
+            apiKeyReader: { nil }
+        )
+
+        store.refreshDeveloperLogs()
+        try expect(store.developerLogSnapshot.databaseMetrics.contains { $0.label == "raw_entries" }, "developer logs should include database table metrics")
+        try expect(store.developerLogSnapshot.runtimeEntries.contains { $0.title == "App state" }, "developer logs should include runtime app state")
+
+        await store.captureForReview("Jason Wu 喜欢吃三文鱼。", mode: .friendDossier)
+        let update = try require(
+            store.pendingUpdates.first { $0.reviewCategory == .friendDossier && ($0.summary.contains("三文鱼") || $0.evidence.contains("三文鱼")) },
+            "developer log setup missing salmon update"
+        )
+        store.confirm(update)
+        store.refreshDeveloperLogs()
+
+        try expect(store.developerLogSnapshot.recentEntries.contains { $0.title == "person_profile_patch_approved" }, "developer logs should surface recent audit events")
+        try expect(!store.developerLogSnapshot.searchableText.localizedCaseInsensitiveContains("api_key"), "developer logs should not expose API key fields")
     }
 
     @MainActor

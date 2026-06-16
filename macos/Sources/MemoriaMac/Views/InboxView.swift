@@ -14,9 +14,11 @@ struct InboxView: View {
 
     private var visibleUpdates: [PendingUpdate] {
         guard let selectedCategory else {
-            return store.pendingUpdates
+            return store.pendingUpdates.deduplicatedForReviewDisplay()
         }
-        return store.pendingUpdates.filter { $0.reviewCategory == selectedCategory }
+        return store.pendingUpdates
+            .filter { $0.reviewCategory == selectedCategory }
+            .deduplicatedForReviewDisplay()
     }
 
     var body: some View {
@@ -88,6 +90,30 @@ struct InboxView: View {
                 store.selectedReviewCategory = ReviewCategory(rawValue: value)
             }
         )
+    }
+}
+
+private extension Array where Element == PendingUpdate {
+    func deduplicatedForReviewDisplay() -> [PendingUpdate] {
+        var seenKeys = Set<String>()
+        return filter { update in
+            seenKeys.insert(update.reviewDisplayDedupeKey).inserted
+        }
+    }
+}
+
+private extension PendingUpdate {
+    var reviewDisplayDedupeKey: String {
+        [
+            sourceEntryID ?? "no-source",
+            proposalType.rawValue,
+            title,
+            summary.isEmpty ? evidence : summary
+        ]
+        .joined(separator: "|")
+        .lowercased()
+        .replacingOccurrences(of: " ", with: "")
+        .replacingOccurrences(of: "\n", with: "")
     }
 }
 

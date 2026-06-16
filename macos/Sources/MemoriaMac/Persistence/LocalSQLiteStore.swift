@@ -78,6 +78,24 @@ public final class LocalSQLiteStore {
         })
     }
 
+    public func loadDeveloperLogSnapshot(runtimeEntries: [DeveloperLogEntry] = []) throws -> DeveloperLogSnapshot {
+        let existingTables = try tableNames()
+        let databaseMetrics = try developerLogTables.map { tableName in
+            DeveloperLogMetric(
+                label: tableName,
+                value: existingTables.contains(tableName) ? try scalarInt("SELECT COUNT(*) FROM \(tableName)") : 0
+            )
+        }
+        let recentEntries = try loadRecentDeveloperAuditEvents() + loadRecentDeveloperAIRuns()
+
+        return DeveloperLogSnapshot(
+            generatedAt: memoriaTimestamp(),
+            databaseMetrics: databaseMetrics,
+            runtimeEntries: runtimeEntries,
+            recentEntries: recentEntries.sorted { $0.createdAt > $1.createdAt }
+        )
+    }
+
     public func deleteAllData() throws {
         try withTransaction {
             let existingTables = try tableNames()
@@ -1539,6 +1557,103 @@ func mapMemoryAtom(_ statement: OpaquePointer?) -> MemoryAtom {
         createdAt: columnText(statement, 13),
         updatedAt: columnText(statement, 14)
     )
+}
+
+private let developerLogTables = [
+    "raw_entries",
+    "pending_updates",
+    "memory_atoms",
+    "people",
+    "themes",
+    "reminders",
+    "gift_ideas",
+    "relationship_edges",
+    "audit_events",
+    "ai_runs"
+]
+
+private extension LocalSQLiteStore {
+    func loadRecentDeveloperAuditEvents() throws -> [DeveloperLogEntry] {
+        try query(
+            """
+            SELECT id, event_type, subject_id, detail_json, created_at
+            FROM audit_events
+            ORDER BY created_at DESC
+            LIMIT 24
+            """
+        ) { statement in
+            let id = columnText(statement, 0)
+            let eventType = columnText(statement, 1)
+            let subjectID = columnOptionalText(statement, 2)
+            let detailJSON = columnOptionalText(statement, 3)
+            let createdAt = columnText(statement, 4)
+            return DeveloperLogEntry(
+                id: id,
+                title: eventType,
+                detail: developerAuditDetailSummary(subjectID: subjectID, detailJSON: detailJSON),
+                createdAt: createdAt
+            )
+        }
+    }
+
+    func loadRecentDeveloperAIRuns() throws -> [DeveloperLogEntry] {
+        try query(
+            """
+            SELECT id, workflow_name, model, input_summary, status, error_message, created_at
+            FROM ai_runs
+            ORDER BY created_at DESC
+            LIMIT 24
+            """
+        ) { statement in
+            let id = columnText(statement, 0)
+            let workflowName = columnText(statement, 1)
+            let model = columnText(statement, 2)
+            let inputSummary = columnOptionalText(statement, 3)
+            let status = columnText(statement, 4)
+            let errorMessage = columnOptionalText(statement, 5)
+            let createdAt = columnText(statement, 6)
+            let detailParts = [
+                "model: \(redactedDeveloperLogText(model))",
+                inputSummary.map { "input: \(redactedDeveloperLogText($0))" },
+                errorMessage.map { "error: \(redactedDeveloperLogText($0))" }
+            ].compactMap(\.self)
+            return DeveloperLogEntry(
+                id: id,
+                title: "ai_run.\(workflowName).\(status)",
+                detail: detailParts.joined(separator: " · "),
+                createdAt: createdAt,
+                level: status == "failed" ? .error : .info
+            )
+        }
+    }
+}
+
+private func developerAuditDetailSummary(subjectID: String?, detailJSON: String?) -> String {
+    var parts: [String] = []
+    if let subjectID, !subjectID.isEmpty {
+        parts.append("subject: \(redactedDeveloperLogText(subjectID))")
+    }
+    guard let detailJSON,
+          let data = detailJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data),
+          let dictionary = object as? [String: Any] else {
+        return parts.isEmpty ? "No detail payload." : parts.joined(separator: " · ")
+    }
+
+    let keys = dictionary.keys
+        .filter { !$0.localizedCaseInsensitiveContains("key") && !$0.localizedCaseInsensitiveContains("token") }
+        .sorted()
+    if !keys.isEmpty {
+        parts.append("detail keys: \(keys.joined(separator: ", "))")
+    }
+    return parts.isEmpty ? "No detail payload." : parts.joined(separator: " · ")
+}
+
+private func redactedDeveloperLogText(_ text: String) -> String {
+    var redacted = text.replacingOccurrences(of: "api_key", with: "credential", options: .caseInsensitive)
+    redacted = redacted.replacingOccurrences(of: "apikey", with: "credential", options: .caseInsensitive)
+    redacted = redacted.replacingOccurrences(of: "token", with: "credential", options: .caseInsensitive)
+    return redacted
 }
 
 func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
