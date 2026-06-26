@@ -10,9 +10,15 @@ private struct ProtocolChecker {
         try checkMigrationAppliesSchemaV2Tables()
         try checkRawEntryRepositoryCreatesAndFetchesRawEntry()
         try checkAIParserAcceptsValidExtractMemoryResponseAndRejectsInvalidJSON()
+        try checkAIParserRejectsStrictKeyAndConfidenceFailures()
+        try checkAIParserAcceptsV11StructuredProposalsAndRejectsBadV11()
+        try checkStructuredPendingUpdateEnvelopeDisplaysEditsAndApproves()
+        try checkReviewUIFixtureCoversExecutableScenarios()
         try checkConnectionTestRequestIsMinimalJSONPing()
         try await checkLocalFallbackKeepsPersonPreferenceAsFriendFact()
         try await checkLocalFallbackCreatesFriendProfilePatches()
+        try await checkLocalFallbackRoutesSocialPlansToSchedule()
+        try await checkClassificationBoundaryEdgeCases()
         try checkPendingUpdateApprovalCreatesMemoryAtomAndLinksThemeAndPerson()
         try checkProfilePatchApprovalMergesIntoFriendDossier()
         try checkInvalidProfilePatchProposalsAreRejected()
@@ -56,6 +62,7 @@ private struct ProtocolChecker {
         try await checkBulkFriendCSVPreviewAndConfirmCreatesPeopleAndPatchReviews()
         try await checkTransferBundlePreviewAndMergeKeepsExistingData()
         try checkRelationshipMapLayoutScalesInNarrowWindows()
+        try checkRelationshipVisualToneClassification()
         try checkMemoryCategoriesIncludeReflectionsRelationshipsAndGifts()
         try checkChineseFirstCopyExistsForCoreNavigation()
         try checkPersonProfileCategoriesBackAISchema()
@@ -104,6 +111,163 @@ private struct ProtocolChecker {
             _ = try AIJSONParser().parseExtractMemoryResponse(data: invalid)
             throw CheckError.failed("invalid response was accepted")
         } catch is AIContractError {
+        }
+    }
+
+    private func checkAIParserRejectsStrictKeyAndConfidenceFailures() throws {
+        let parser = AIJSONParser()
+        try expectAIContractFailure("extract_memory_extra_top_level_key", parser: parser)
+        try expectAIContractFailure("extract_memory_extra_nested_key", parser: parser)
+        try expectAIContractFailure("extract_memory_confidence_out_of_range", parser: parser)
+    }
+
+    private func checkAIParserAcceptsV11StructuredProposalsAndRejectsBadV11() throws {
+        let parser = AIJSONParser()
+        let parsed = try parser.parseExtractMemoryResponse(data: fixtureData("extract_memory_v11_structured_schedule_gift"))
+
+        try expect(parsed.schemaVersion == "1.1", "v1.1 response should preserve schema version")
+        try expect(parsed.contractName == "extract_memory", "v1.1 response should preserve contract name")
+        try expect(parsed.reminderProposals.count == 1, "v1.1 response should parse structured reminder")
+        try expect(parsed.reminderProposals[0].dueAt == nil, "relative reminder date should remain unconfirmed")
+        try expect(parsed.reminderProposals[0].scheduleSubtype == "follow_up", "structured reminder should preserve schedule subtype")
+        try expect(parsed.reminderProposals[0].scheduleExecutionState == "draft_schedule_candidate", "relative reminder should stay a draft candidate")
+        try expect(parsed.reminderProposals[0].needsSlotConfirmation, "missing notification policy should require slot confirmation")
+        try expect(parsed.reminderProposals[0].confirmationReasons == ["notification_policy_missing"], "confirmation reasons should derive from blockers")
+        try expect(parsed.reminderProposals[0].requiresUserApproval, "all reminder proposals must require user approval")
+        try expect(parsed.reminderProposals[0].classification?.workflowPrimary == "reminder_source/follow_up", "classification context should preserve workflow primary")
+        try expect(parsed.giftSignalProposals.count == 1, "v1.1 response should parse structured gift signal")
+        try expect(parsed.giftSignalProposals[0].riskTags == [.preferenceUncertain, .surpriseSensitive], "gift risk tags should parse as enum values")
+        try expect(parsed.personFactProposals.first?.valueStruct?.kind == "dislike", "profile value_struct should parse")
+        try expect(parsed.personFactProposals.first?.classification?.workflowPrimary == "person_fact/dietary_allergy", "profile fact classification should preserve workflow primary")
+        try expect(parsed.giftSignalProposals.first?.classification?.workflowPrimary == "gift_signal/touchpoint", "gift signal classification should preserve workflow primary")
+
+        let legacyReminderJSON = """
+        {"entry_summary":"legacy reminder","memory_proposals":[],"person_fact_proposals":[],"reminder_proposals":["明天提醒我问 Jason"],"gift_signal_proposals":["May 喜欢拍立得"],"conflicts":[],"follow_up_questions":[]}
+        """
+        let legacy = try parser.parseExtractMemoryResponse(content: legacyReminderJSON)
+        try expect(legacy.reminderProposals.first?.legacyText == "明天提醒我问 Jason", "legacy reminder string should remain readable")
+        try expect(legacy.giftSignalProposals.first?.legacyText == "May 喜欢拍立得", "legacy gift string should remain readable")
+
+        for fixture in [
+            "extract_memory_v11_unknown_version",
+            "extract_memory_v11_bad_reminder_unknown_key",
+            "extract_memory_v11_bad_gift_risk_tag",
+            "extract_memory_v11_bad_value_struct_anniversary",
+            "extract_memory_v11_bad_candidate_person_ids",
+            "extract_memory_v11_bad_legacy_string_arrays",
+            "extract_memory_v11_bad_time_role",
+            "extract_memory_v11_bad_deadline_missing_due",
+            "extract_memory_v11_bad_recurring_incomplete"
+        ] {
+            try expectAIContractFailure(fixture, parser: parser)
+        }
+    }
+
+    private func checkStructuredPendingUpdateEnvelopeDisplaysEditsAndApproves() throws {
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = try LocalSQLiteStore(filename: "test.sqlite3", directory: tempDirectory, seedDemoData: true)
+        let rawEntries = RawEntryRepository(database: store)
+        let pendingUpdates = PendingUpdateRepository(database: store)
+        let parsed = try AIJSONParser().parseExtractMemoryResponse(data: fixtureData("extract_memory_v11_structured_schedule_gift"))
+
+        let profileEntry = try rawEntries.create(inputType: .text, rawText: "May 不喜欢香菜，但不是过敏。")
+        let patch = try require(parsed.personFactProposals.first, "structured profile patch fixture missing")
+        let profileUpdate = try pendingUpdates.createPersonProfilePatchProposal(
+            sourceEntryID: profileEntry.id,
+            proposal: patch,
+            envelope: patch.pendingUpdateEnvelope()
+        )
+        try expect(profileUpdate.structuredReviewContext?.valueStruct?.kind == "dislike", "profile value_struct should be reviewable from envelope")
+        let editedProfileUpdate = try pendingUpdates.editPersonProfilePatch(
+            id: profileUpdate.id,
+            targetPersonID: "demo-may",
+            targetDisplayName: "May",
+            profileCategory: .dietaryAllergy,
+            proposedValue: "不喜欢香菜，但不是过敏。",
+            valueStruct: patch.valueStruct
+        )
+        try expect(editedProfileUpdate.structuredReviewContext?.valueStruct?.item == "香菜", "editing profile patch should preserve value_struct")
+        let profileTraceMemory = try pendingUpdates.approve(id: profileUpdate.id)
+        let mayAfterProfileApproval = try require(try store.loadSnapshot().people.first { $0.id == "demo-may" }, "May missing after profile approval")
+        try expect(mayAfterProfileApproval.categoryNote(.dietaryAllergy).contains("香菜"), "approved profile patch should update May")
+        let undoneProfileUpdate = try pendingUpdates.undoApproval(id: profileUpdate.id)
+        try expect(undoneProfileUpdate.undoState == "applied", "profile patch undo should update envelope state")
+        let mayAfterUndo = try require(try store.loadSnapshot().people.first { $0.id == "demo-may" }, "May missing after profile undo")
+        try expect(!mayAfterUndo.categoryNote(.dietaryAllergy).contains("香菜"), "profile patch undo should restore old category note")
+        let profileTraceAfterUndo = try require(MemoryRepository(database: store).fetch(id: profileTraceMemory.id), "profile undo should preserve trace memory")
+        try expect(profileTraceAfterUndo.status == .disputed, "profile undo should mark trace memory disputed instead of deleting it")
+
+        let reminderEntry = try rawEntries.create(inputType: .text, rawText: "下周三提醒我问 Jason 内推材料")
+        let reminder = try require(parsed.reminderProposals.first, "structured reminder fixture missing")
+        let reminderUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: reminderEntry.id,
+            proposal: reminder.memoryAtomProposal(),
+            envelope: reminder.pendingUpdateEnvelope()
+        )
+
+        try expect(reminderUpdate.proposal?.memoryType == .reminderSource, "structured reminder should project to reminder_source")
+        try expect(reminderUpdate.structuredReviewContext?.reminder?.dueLabel == "下周三", "structured reminder context should be reviewable")
+        try expect(reminderUpdate.structuredReviewContext?.reminder?.scheduleSubtype == "follow_up", "structured reminder context should retain subtype")
+        try expect(reminderUpdate.structuredReviewContext?.reminder?.confirmationReasons == ["notification_policy_missing"], "structured reminder context should retain blocker reasons")
+        try expect(reminderUpdate.structuredReviewContext?.classification?.workflowPrimary == "reminder_source/follow_up", "pending envelope should retain classification context")
+
+        let edited = try pendingUpdates.edit(
+            id: reminderUpdate.id,
+            title: "问 Jason 内推材料（确认）",
+            summary: "下周三提醒用户问 Jason 内推材料。",
+            content: "下周三提醒用户问 Jason 内推材料。"
+        )
+        try expect(edited.structuredReviewContext?.reminder != nil, "editing an envelope should preserve structured context")
+        try expect(edited.structuredReviewContext?.classification?.workflowPrimary == "reminder_source/follow_up", "editing should preserve classification context")
+
+        do {
+            _ = try pendingUpdates.approve(id: reminderUpdate.id)
+            throw CheckError.failed("blocked structured reminder should not approve without slot confirmation")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+        let remindersAfterBlockedStructuredReminder = try store.loadSnapshot().reminders
+        try expect(remindersAfterBlockedStructuredReminder.allSatisfy { !$0.title.contains("Jason") || !$0.title.contains("内推") }, "blocked structured reminder must not create a derived reminder")
+
+        let giftEntry = try rawEntries.create(inputType: .text, rawText: "May 想试拍立得相纸和小型香水")
+        let giftCountBefore = try store.loadSnapshot().gifts.count
+        let gift = try require(parsed.giftSignalProposals.first, "structured gift fixture missing")
+        let giftUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: giftEntry.id,
+            proposal: gift.memoryAtomProposal(),
+            envelope: gift.pendingUpdateEnvelope()
+        )
+        try expect(giftUpdate.reviewCategory == .friendDossier, "gift signal should route to friend dossier review")
+        try expect(giftUpdate.structuredReviewContext?.classification?.workflowPrimary == "gift_signal/touchpoint", "gift pending envelope should retain classification context")
+        let giftMemory = try pendingUpdates.approve(id: giftUpdate.id)
+        let giftCountAfter = try store.loadSnapshot().gifts.count
+        try expect(giftMemory.type == .giftSignal, "structured gift should approve as gift_signal memory")
+        try expect(giftCountAfter == giftCountBefore, "approving a gift signal must not create final gift ideas directly")
+    }
+
+    private func checkReviewUIFixtureCoversExecutableScenarios() throws {
+        let data = try fixtureData("review_ui_pending_updates")
+        let object = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try castDictionary(object, "review UI fixture")
+        let pendingUpdates = try castArray(dictionary["pending_updates"], "pending_updates")
+        let scenarios = Set(pendingUpdates.compactMap { ($0 as? [String: Any])?["scenario"] as? String })
+        for required in [
+            "friend_fact",
+            "schedule_unclear_date",
+            "gift_signal_high_risk",
+            "schema_failure",
+            "candidate_people",
+            "sensitive_self_reflection"
+        ] {
+            try expect(scenarios.contains(required), "review UI fixture missing \(required)")
+        }
+        for update in pendingUpdates {
+            let entry = try castDictionary(update, "pending update fixture")
+            try expect(entry["id"] as? String != nil, "fixture update needs stable id")
+            try expect(entry["proposal_type"] as? String != nil, "fixture update needs proposal type")
+            try expect(entry["payload_schema_version"] as? String == "1.1", "fixture update should model v1.1 envelope")
+            try expect(entry["payload_contract_name"] as? String == "pending_update_payload", "fixture update should model pending payload contract")
+            try expect((entry["expected_labels"] as? [String])?.isEmpty == false, "fixture update needs expected labels")
         }
     }
 
@@ -174,6 +338,542 @@ private struct ProtocolChecker {
         try expect(!response.memoryProposals.contains { $0.memoryType == .personalReflection }, "explicit friend food facts must not become personal reflections")
         try expect(response.personFactProposals.contains { $0.targetPersonID == "demo-alex" && $0.profileCategory == .foodPreference && $0.proposedValue.contains("火锅") }, "fallback should create a food preference profile patch")
         try expect(response.personFactProposals.contains { $0.targetPersonID == "demo-alex" && $0.profileCategory == .dietaryAllergy && $0.proposedValue.contains("香菜") }, "fallback should create a dietary/allergy profile patch")
+    }
+
+    private func checkLocalFallbackRoutesSocialPlansToSchedule() async throws {
+        let text = "我要和 Jason 下午约个饭。"
+        let workflow = AIWorkflowService()
+        let route = workflow.routeInput(text: text)
+
+        try expect(route.primaryType == MemoryAtomType.reminderSource.rawValue, "social plans with a time should route as schedule, not reflection")
+        try expect(route.requiresReminderGeneration, "social plans should request reminder generation")
+        let reflectionRoute = workflow.routeInput(text: "今天准备考试时，我发现自己有点焦虑。")
+        try expect(reflectionRoute.primaryType == "context_only", "one-off exam anxiety should remain context-only unless the user asks to save it")
+        try expect(!reflectionRoute.requiresExtraction, "context-only episodic state should not create a review card by default")
+
+        let rawEntry = RawEntry(
+            id: "raw-local-social-plan",
+            inputType: .text,
+            rawText: text,
+            sourceFileID: nil,
+            createdAt: memoriaTimestamp(),
+            updatedAt: memoriaTimestamp()
+        )
+        let response = try await workflow.extractMemory(
+            rawEntry: rawEntry,
+            knownPeople: DashboardSnapshot.demo.people,
+            knownThemes: DashboardSnapshot.demo.themes,
+            apiKey: nil,
+            settings: NativeSettings(language: .zhCN)
+        )
+        let proposal = try require(response.memoryProposals.first, "local schedule fallback proposal missing")
+
+        try expect(proposal.memoryType == .reminderSource, "social plan should become a reminder source")
+        try expect(proposal.sensitivity == .normal, "plain schedule facts must not be marked private")
+        try expect(proposal.relatedPeople.first?.matchedPersonID == "demo-jason", "schedule fallback should link Jason")
+        try expect(proposal.themes.contains { $0.name == "提醒事项" }, "schedule fallback should use reminder themes")
+        try expect(!response.memoryProposals.contains { $0.memoryType == .personalReflection }, "social plan must not create self-reflection cards")
+
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = try LocalSQLiteStore(filename: "local-social-plan.sqlite3", directory: tempDirectory, seedDemoData: true)
+        let rawEntries = RawEntryRepository(database: store)
+        let pendingUpdates = PendingUpdateRepository(database: store)
+        let storedEntry = try rawEntries.create(inputType: .text, rawText: text)
+        let update = try pendingUpdates.createMemoryAtomProposal(sourceEntryID: storedEntry.id, proposal: proposal)
+
+        try expect(update.reviewCategory == .schedule, "social plan pending update should route to schedule review")
+        let scheduleContext = try require(update.structuredReviewContext?.reminder, "schedule fallback should create structured reminder context")
+        try expect(scheduleContext.scheduleSubtype == "event", "social plan should be an event candidate")
+        try expect(scheduleContext.scheduleExecutionState == "draft_schedule_candidate", "afternoon social plan should not be executable without confirmation")
+        try expect(scheduleContext.timeExpressionKind == "fuzzy_window", "afternoon should be preserved as a fuzzy window")
+        try expect(scheduleContext.timePrecision == "half_day_window", "afternoon should keep half-day precision")
+        try expect(scheduleContext.needsSlotConfirmation, "afternoon social plan should need slot confirmation")
+        try expect(scheduleContext.confirmationReasons.contains("time_slot"), "afternoon social plan should ask for a concrete slot")
+        try expect(scheduleContext.confirmationReasons.contains("notification_policy_missing"), "non-explicit reminder should ask for notification policy")
+        try expect(scheduleContext.requiresUserApproval, "schedule proposals must still require user approval")
+        try expect(update.structuredReviewContext?.classification?.workflowPrimary == "reminder_source/event", "schedule fallback should preserve workflow primary")
+        try expect(update.proposal?.sensitivity == .normal, "ordinary social plan should stay normal sensitivity")
+        do {
+            _ = try pendingUpdates.approve(id: update.id)
+            throw CheckError.failed("draft social plan should not approve or create a reminder without slot confirmation")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+        let remindersAfterBlockedSocialPlan = try store.loadSnapshot().reminders
+        try expect(remindersAfterBlockedSocialPlan.allSatisfy { !$0.title.contains("约饭") }, "blocked social plan must not create a reminder")
+    }
+
+    private func checkClassificationBoundaryEdgeCases() async throws {
+        let workflow = AIWorkflowService()
+
+        func extract(_ text: String) async throws -> ExtractMemoryResponse {
+            let rawEntry = RawEntry(
+                id: "raw-\(abs(text.hashValue))",
+                inputType: .text,
+                rawText: text,
+                sourceFileID: nil,
+                createdAt: memoriaTimestamp(),
+                updatedAt: memoriaTimestamp()
+            )
+            return try await workflow.extractMemory(
+                rawEntry: rawEntry,
+                knownPeople: DashboardSnapshot.demo.people,
+                knownThemes: DashboardSnapshot.demo.themes,
+                apiKey: nil,
+                settings: NativeSettings(language: .zhCN)
+            )
+        }
+
+        let oneOffAnxiety = try await extract("今天准备考试时，我发现自己有点焦虑。")
+        try expect(oneOffAnxiety.memoryProposals.isEmpty, "one-off exam anxiety should not create a durable self-reflection card by default")
+        try expect(oneOffAnxiety.followUpQuestions.contains { $0.contains("长期保存") || $0.contains("自我反思") }, "context-only state should offer an explicit save path")
+
+        let savedAnxiety = try await extract("今天准备考试时，我发现自己有点焦虑，想记一下这个状态。")
+        try expect(savedAnxiety.memoryProposals.first?.memoryType == .personalReflection, "explicit save intent should create a self-reflection candidate")
+
+        let awkwardPlan = try await extract("我想下午和 Jason 吃饭但有点尴尬。")
+        try expect(awkwardPlan.memoryProposals.first?.memoryType == .reminderSource, "social plan with incidental awkwardness should stay a schedule candidate")
+        try expect(awkwardPlan.memoryProposals.first?.sensitivity == .normal, "incidental awkwardness in a normal plan should not become sensitive")
+        try expect(!awkwardPlan.memoryProposals.contains { $0.memoryType == .personalReflection }, "incidental awkwardness should not create a self-reflection card")
+
+        let friendEventOnly = try await extract("Jason 下周面试。")
+        try expect(friendEventOnly.memoryProposals.first?.memoryType == .personFact, "friend event without user action should be a friend fact")
+        try expect(!friendEventOnly.memoryProposals.contains { $0.memoryType == .reminderSource }, "friend event without user action should not become a reminder")
+        try expect(friendEventOnly.personFactProposals.contains { $0.profileCategory == .currentState }, "friend interview state should update current_state")
+
+        let friendWithFollowUp = try await extract("Jason 最近准备面试，我明天问问他。")
+        try expect(friendWithFollowUp.memoryProposals.first?.memoryType == .reminderSource, "friend state plus user follow-up should make follow-up the primary workflow")
+        try expect(friendWithFollowUp.personFactProposals.contains { $0.profileCategory == .currentState }, "friend follow-up should preserve the friend state as a secondary profile fact")
+
+        let fearMotivation = try await extract("我怕 Jason 忘了材料。")
+        try expect(fearMotivation.memoryProposals.first?.memoryType == .reminderSource, "fear about Jason forgetting material should be follow-up motivation, not reflection")
+
+        let foodFact = try await extract("Alex 喜欢薯片，不吃香菜。")
+        try expect(foodFact.memoryProposals.first?.memoryType == .personFact, "explicit food preference should be a person fact")
+        try expect(foodFact.personFactProposals.contains { $0.profileCategory == .foodPreference }, "food preference should create a food profile patch")
+        try expect(foodFact.personFactProposals.contains { $0.profileCategory == .dietaryAllergy }, "dietary avoidance should create a dietary profile patch")
+
+        let relationshipMemory = try await extract("May 和 Alex 最近一起做项目。")
+        try expect(relationshipMemory.memoryProposals.first?.memoryType == .relationshipMemory, "two-person collaboration should be relationship memory")
+
+        let giftTouchpoint = try await extract("May 说想试拍立得。")
+        try expect(giftTouchpoint.memoryProposals.first?.memoryType == .giftSignal, "friend wish touchpoint should be a gift signal")
+
+        let resourceFact = try await extract("Jason 认识一个投资人。")
+        try expect(resourceFact.memoryProposals.first?.memoryType == .personFact, "resource fact without user ask should stay a person fact")
+        try expect(resourceFact.memoryProposals.first?.classification?.workflowPrimary == "person_fact/resources", "resource fact should not become an opportunity workflow by itself")
+        try expect(resourceFact.memoryProposals.first?.classification?.opportunityType == "none", "resource fact alone should not create a relationship opportunity")
+        try expect(resourceFact.personFactProposals.contains { $0.profileCategory == .friendNetwork }, "resource fact should create a friend_network profile patch")
+        try expect(!resourceFact.memoryProposals.contains { $0.memoryType == .reminderSource }, "resource fact should not create a reminder")
+
+        let referralRequest = try await extract("Jason 认识一个投资人，我想问他能不能介绍。")
+        try expect(referralRequest.memoryProposals.first?.memoryType == .relationshipMemory, "explicit referral ask should be a relationship opportunity review candidate")
+        try expect(referralRequest.memoryProposals.first?.classification?.workflowPrimary == "relationship_opportunity/referral_request", "referral ask should use relationship_opportunity workflow")
+        try expect(referralRequest.memoryProposals.first?.classification?.storageTargets.contains("relationship_memory") == true, "relationship opportunity should write only approved facts/memory, not a new storage type")
+        try expect(referralRequest.memoryProposals.first?.classification?.blockedDecision?.contains("consent") == true, "referral request should stay gated by consent and give-first framing")
+        try expect(referralRequest.memoryProposals.first?.classification?.opportunityConsent?["requires_consent"] == "true", "referral request should carry consent metadata")
+        try expect(referralRequest.memoryProposals.first?.classification?.giveFirstOffer?["required"] == "true", "referral request should require give-first framing")
+        try expect(referralRequest.memoryProposals.first?.classification?.relationshipStage?["confidence"] != nil, "referral request should carry relationship stage confidence")
+        try expect(referralRequest.memoryProposals.first?.classification?.priorityScoreAudit?["cap"] == "give_first_and_consent_missing", "referral request should cap priority when consent/give-first are missing")
+        try expect(referralRequest.memoryProposals.first?.classification?.opportunityLifecycle?["state"] == "blocked_confirmation", "referral request should start blocked")
+        try expect(!referralRequest.memoryProposals.contains { $0.memoryType == .reminderSource }, "referral request should not bypass schedule protocol")
+
+        let introRequest = try await extract("May 让我把她介绍给 Alex。")
+        try expect(introRequest.memoryProposals.first?.memoryType == .relationshipMemory, "intro request should be a relationship opportunity review candidate")
+        try expect(introRequest.memoryProposals.first?.classification?.workflowPrimary == "relationship_opportunity/intro", "intro request should preserve intro workflow")
+        try expect(introRequest.memoryProposals.first?.classification?.blockedDecision?.contains("consent") == true, "single-party consent should not be enough for intro")
+        try expect(introRequest.memoryProposals.first?.classification?.opportunityConsent?["ask_target_first"] == "true", "intro request should require target consent")
+        try expect(introRequest.memoryProposals.first?.classification?.networkPath?["status"] == "partial", "intro request should carry partial network path")
+
+        let giftAction = try await extract("我想给 May 买生日礼物。")
+        try expect(giftAction.memoryProposals.first?.memoryType == .giftSignal, "explicit gift action should still store as gift signal after approval")
+        try expect(giftAction.memoryProposals.first?.classification?.workflowPrimary == "relationship_opportunity/gift", "gift buying intent should be a gated relationship opportunity workflow")
+        try expect(giftAction.memoryProposals.first?.classification?.storageTargets == ["gift_signal"], "gift opportunity should not introduce a relationship_opportunity storage target")
+        try expect(giftAction.memoryProposals.first?.classification?.priorityScoreAudit?["cap"] == "gift_preference_uncertain", "gift opportunity should carry a risk-aware priority audit")
+        try expect(giftAction.memoryProposals.first?.classification?.opportunityLifecycle?["state"] == "blocked_confirmation", "gift opportunity should start blocked until preference/timing confirmation")
+
+        let friendDesire = try await extract("May 想暑假旅行。")
+        try expect(friendDesire.memoryProposals.first?.memoryType == .personFact, "friend desire owner should not become user's schedule")
+        try expect(friendDesire.personFactProposals.contains { $0.profileCategory == .travelPreference }, "friend travel desire should be a travel preference profile fact")
+
+        let boundary = try await extract("我不太想再和 Chris 单独吃饭。")
+        try expect(boundary.memoryProposals.first?.memoryType == .personalReflection, "negative relationship boundary should be self/relationship reflection, not schedule")
+        try expect(!boundary.memoryProposals.contains { $0.memoryType == .reminderSource }, "negative relationship boundary should not create a new schedule")
+
+        let tempDirectory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = try LocalSQLiteStore(filename: "boundary-context.sqlite3", directory: tempDirectory, seedDemoData: true)
+        let rawEntries = RawEntryRepository(database: store)
+        let pendingUpdates = PendingUpdateRepository(database: store)
+        let followUpEntry = try rawEntries.create(inputType: .text, rawText: "Jason 最近准备面试，我明天问问他。")
+        let followUpUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: followUpEntry.id,
+            proposal: try require(friendWithFollowUp.memoryProposals.first, "follow-up proposal missing")
+        )
+        let classification = try require(followUpUpdate.structuredReviewContext?.classification, "follow-up classification context missing")
+        try expect(classification.semanticPrimaryUnitID == "u1", "friend state should be semantic primary")
+        try expect(classification.workflowPrimaryUnitID == "u2", "user follow-up should be workflow primary")
+        try expect(classification.secondaryWorkflows.contains("person_fact/current_state"), "friend state should remain a secondary workflow")
+        let reminder = try require(followUpUpdate.structuredReviewContext?.reminder, "follow-up reminder context missing")
+        try expect(reminder.scheduleSubtype == "follow_up", "friend follow-up should preserve follow_up subtype")
+        try expect(reminder.scheduleExecutionState == "draft_schedule_candidate", "date-only follow-up should remain draft candidate")
+        try expect(reminder.confirmationReasons.contains("notification_policy_missing"), "follow-up should require notification policy before execution")
+
+        let mutationEntry = try rawEntries.create(inputType: .text, rawText: "取消今晚和 Jason 的饭。")
+        let mutationResponse = try await extract(mutationEntry.rawText)
+        let mutationUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: mutationEntry.id,
+            proposal: try require(mutationResponse.memoryProposals.first, "mutation proposal missing")
+        )
+        let mutationContext = try require(mutationUpdate.structuredReviewContext?.reminder, "mutation context missing")
+        try expect(mutationContext.scheduleSubtype == "cancel_existing", "cancel input should use cancel_existing subtype")
+        try expect(mutationContext.scheduleExecutionState == "existing_item_mutation", "cancel input should be an existing item mutation")
+        try expect(mutationContext.mutationMatch?["match_status"] == "ambiguous", "cancel mutation must not execute without a unique match")
+        do {
+            _ = try pendingUpdates.approve(id: mutationUpdate.id)
+            throw CheckError.failed("ambiguous mutation should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let guardEntry = try rawEntries.create(inputType: .text, rawText: "下次见 May 别提她前任。")
+        let guardResponse = try await extract(guardEntry.rawText)
+        let guardUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: guardEntry.id,
+            proposal: try require(guardResponse.memoryProposals.first, "contextual guard proposal missing")
+        )
+        let guardContext = try require(guardUpdate.structuredReviewContext?.reminder, "contextual guard context missing")
+        try expect(guardContext.scheduleSubtype == "contextual_guard", "guard input should use contextual_guard subtype")
+        try expect(guardContext.contextualGuard?["anchor_status"] == "unmatched", "unanchored guard should not be standalone executable")
+        do {
+            _ = try pendingUpdates.approve(id: guardUpdate.id)
+            throw CheckError.failed("unanchored contextual guard should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let recurringEntry = try rawEntries.create(inputType: .text, rawText: "每周五问 May 论文进度。")
+        let recurringResponse = try await extract(recurringEntry.rawText)
+        let recurringUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: recurringEntry.id,
+            proposal: try require(recurringResponse.memoryProposals.first, "recurring proposal missing")
+        )
+        let recurringContext = try require(recurringUpdate.structuredReviewContext?.reminder, "recurring context missing")
+        try expect(recurringContext.scheduleSubtype == "recurring", "recurring input should preserve recurring subtype")
+        try expect(recurringContext.recurrenceRule?["needs_remind_time"] == "true", "recurring candidate should require a remind time")
+        do {
+            _ = try pendingUpdates.approve(id: recurringUpdate.id)
+            throw CheckError.failed("recurring candidate without trigger time should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let tomorrowDate = memoriaDateOnlyString(daysFromNow: 1)
+        let tomorrowReminderAt = "\(tomorrowDate)T14:30:00+08:00"
+        let tomorrowMismatchReminderAt = "\(tomorrowDate)T14:45:00+08:00"
+        let splitEventEntry = try rawEntries.create(inputType: .text, rawText: "明天 15:00 和 Jason 开会，14:30 提醒我。")
+        let splitEventResponse = try await extract(splitEventEntry.rawText)
+        let splitEventUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: splitEventEntry.id,
+            proposal: try require(splitEventResponse.memoryProposals.first, "split event proposal missing")
+        )
+        let splitEventContext = try require(splitEventUpdate.structuredReviewContext?.reminder, "split event context missing")
+        try expect(splitEventContext.scheduleSubtype == "event", "split event should be an event")
+        try expect(splitEventContext.scheduleExecutionState == "executable_reminder", "explicit event start and reminder trigger should be executable after approval")
+        try expect(splitEventContext.startAt?.contains("\(tomorrowDate)T15:00") == true, "event start should stay separate from reminder trigger")
+        try expect(splitEventContext.remindAt == tomorrowReminderAt, "reminder trigger should use the explicit reminder time")
+        try expect(splitEventContext.notificationPolicy?.deliveryMode == "reminder", "executable reminder must use reminder delivery")
+        try expect(splitEventContext.notificationPolicy?.policySource == "user_explicit", "explicit reminder must keep user_explicit policy source")
+        try expect(!splitEventContext.needsSlotConfirmation, "split event should not need slot confirmation")
+        let splitEventMemory = try pendingUpdates.approve(id: splitEventUpdate.id)
+        let splitReminder = try require(try store.loadSnapshot().reminders.first { $0.id == "reminder-\(splitEventMemory.id)" }, "split event approval should create a local reminder")
+        try expect(splitReminder.timeLabel == "14:30", "local reminder should use remind_at, not event start")
+
+        let ambiguousEntry = try rawEntries.create(inputType: .text, rawText: "明天 15:00 提醒我和 Jason 开会。")
+        let ambiguousResponse = try await extract(ambiguousEntry.rawText)
+        let ambiguousUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: ambiguousEntry.id,
+            proposal: try require(ambiguousResponse.memoryProposals.first, "ambiguous event proposal missing")
+        )
+        let ambiguousContext = try require(ambiguousUpdate.structuredReviewContext?.reminder, "ambiguous event context missing")
+        try expect(ambiguousContext.scheduleExecutionState == "draft_schedule_candidate", "conflated event/reminder time must remain a draft")
+        try expect(ambiguousContext.timeRole == "ambiguous", "single explicit time with event and reminder wording should be ambiguous")
+        try expect(ambiguousContext.confirmationReasons.contains("time_slot"), "ambiguous event should ask which time role was intended")
+        do {
+            _ = try pendingUpdates.approve(id: ambiguousUpdate.id)
+            throw CheckError.failed("ambiguous event/reminder time should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let eventWithoutReminderEntry = try rawEntries.create(inputType: .text, rawText: "明天 15:00 和 Jason 开会。")
+        let eventWithoutReminderResponse = try await extract(eventWithoutReminderEntry.rawText)
+        let eventWithoutReminderUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: eventWithoutReminderEntry.id,
+            proposal: try require(eventWithoutReminderResponse.memoryProposals.first, "event without reminder proposal missing")
+        )
+        let eventWithoutReminderContext = try require(eventWithoutReminderUpdate.structuredReviewContext?.reminder, "event without reminder context missing")
+        try expect(eventWithoutReminderContext.scheduleExecutionState == "draft_schedule_candidate", "event start alone is not a reminder trigger")
+        try expect(eventWithoutReminderContext.timeRole == "event_start", "event without reminder should classify the time as event_start")
+        try expect(eventWithoutReminderContext.startAt?.contains("\(tomorrowDate)T15:00") == true, "event start should be retained")
+        try expect(eventWithoutReminderContext.remindAt == nil, "event start should not be copied to remind_at")
+        try expect(eventWithoutReminderContext.confirmationReasons.contains("notification_policy_missing"), "event without reminder policy should be blocked")
+        do {
+            _ = try pendingUpdates.approve(id: eventWithoutReminderUpdate.id)
+            throw CheckError.failed("event without reminder policy should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+        let editedEventWithoutReminder = try pendingUpdates.edit(
+            id: eventWithoutReminderUpdate.id,
+            title: eventWithoutReminderUpdate.title,
+            summary: eventWithoutReminderUpdate.summary,
+            content: eventWithoutReminderUpdate.proposal?.content ?? eventWithoutReminderUpdate.summary,
+            reminderDueAt: tomorrowReminderAt,
+            reminderDueLabel: "明天 14:30"
+        )
+        let editedReminderContext = try require(editedEventWithoutReminder.structuredReviewContext?.reminder, "edited reminder context missing")
+        try expect(editedReminderContext.scheduleExecutionState == "executable_reminder", "editing an explicit reminder time should unblock the schedule")
+        try expect(editedReminderContext.remindAt == tomorrowReminderAt, "edited reminder should store the confirmed remind_at")
+        try expect(editedReminderContext.confirmationBlockers.isEmpty, "edited reminder should clear blockers")
+        let editedReminderMemory = try pendingUpdates.approve(id: editedEventWithoutReminder.id)
+        let editedLocalReminder = try require(try store.loadSnapshot().reminders.first { $0.id == "reminder-\(editedReminderMemory.id)" }, "edited reminder approval should create a local reminder")
+        try expect(editedLocalReminder.timeLabel == "14:30", "edited local reminder should use confirmed reminder time")
+
+        let pastEditedEntry = try rawEntries.create(inputType: .text, rawText: "明天 15:00 和 Jason 开会。")
+        let pastEditedResponse = try await extract(pastEditedEntry.rawText)
+        let pastEditedUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: pastEditedEntry.id,
+            proposal: try require(pastEditedResponse.memoryProposals.first, "past edited proposal missing")
+        )
+        let pastEdited = try pendingUpdates.edit(
+            id: pastEditedUpdate.id,
+            title: pastEditedUpdate.title,
+            summary: pastEditedUpdate.summary,
+            content: pastEditedUpdate.proposal?.content ?? pastEditedUpdate.summary,
+            reminderDueAt: "2020-01-01T14:30:00+08:00",
+            reminderDueLabel: "2020-01-01 14:30"
+        )
+        let pastEditedContext = try require(pastEdited.structuredReviewContext?.reminder, "past edited context missing")
+        try expect(pastEditedContext.scheduleExecutionState != "executable_reminder", "editing a past trigger must not unblock a schedule")
+        try expect(!pastEditedContext.confirmationBlockers.isEmpty, "past edited trigger should keep blockers")
+        do {
+            _ = try pendingUpdates.approve(id: pastEdited.id)
+            throw CheckError.failed("past edited trigger should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        func malformedUpdate(
+            from base: PendingUpdate,
+            mutate: (PendingUpdateReminderContext) -> PendingUpdateReminderContext
+        ) throws -> PendingUpdate {
+            let envelope = try JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: Data(base.payloadJSON.utf8))
+            let reminder = try require(envelope.structuredContext?.reminder, "base reminder missing")
+            var mutableEnvelope = envelope
+            mutableEnvelope.structuredContext = PendingUpdateStructuredReviewContext(
+                sourceKind: envelope.structuredContext?.sourceKind ?? "test_malformed_schedule",
+                sourceProposalID: envelope.structuredContext?.sourceProposalID,
+                reminder: mutate(reminder),
+                giftSignal: envelope.structuredContext?.giftSignal,
+                valueStruct: envelope.structuredContext?.valueStruct,
+                classification: envelope.structuredContext?.classification
+            )
+            return try pendingUpdates.createMemoryAtomProposal(
+                sourceEntryID: base.sourceEntryID,
+                proposal: mutableEnvelope.proposal,
+                envelope: mutableEnvelope
+            )
+        }
+
+        let malformedMissingStart = try malformedUpdate(from: splitEventUpdate) { reminder in
+            PendingUpdateReminderContext(
+                title: reminder.title,
+                targetPersonID: reminder.targetPersonID,
+                targetDisplayName: reminder.targetDisplayName,
+                candidatePersonIDs: reminder.candidatePersonIDs,
+                dueAt: reminder.dueAt,
+                dueLabel: reminder.dueLabel,
+                dateParseReason: reminder.dateParseReason,
+                scheduleSubtype: "event",
+                scheduleExecutionState: "executable_reminder",
+                timeRole: "reminder_trigger",
+                timeExpressionKind: "exact_datetime",
+                timePrecision: "exact_minute",
+                rawTimeExpression: reminder.rawTimeExpression,
+                referenceDate: reminder.referenceDate,
+                referenceDatetime: reminder.referenceDatetime,
+                timezone: reminder.timezone,
+                startAt: nil,
+                endAt: reminder.endAt,
+                deadlineRelation: reminder.deadlineRelation,
+                remindAt: reminder.remindAt,
+                commitmentLevel: reminder.commitmentLevel,
+                notificationPolicy: reminder.notificationPolicy,
+                needsSlotConfirmation: false,
+                confirmationBlockers: [],
+                confirmationReasons: [],
+                requiresUserApproval: true,
+                reasonSummary: reminder.reasonSummary,
+                confusionGuard: reminder.confusionGuard,
+                actor: reminder.actor,
+                action: reminder.action,
+                targetPerson: reminder.targetPerson,
+                location: reminder.location,
+                resolvedWindow: reminder.resolvedWindow,
+                resolvedTime: reminder.resolvedTime,
+                recurrenceRule: reminder.recurrenceRule,
+                mutationMatch: reminder.mutationMatch,
+                contextualGuard: reminder.contextualGuard
+            )
+        }
+        do {
+            _ = try pendingUpdates.approve(id: malformedMissingStart.id)
+            throw CheckError.failed("executable event without start_at should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let malformedPolicyMismatch = try malformedUpdate(from: splitEventUpdate) { reminder in
+            PendingUpdateReminderContext(
+                title: reminder.title,
+                targetPersonID: reminder.targetPersonID,
+                targetDisplayName: reminder.targetDisplayName,
+                candidatePersonIDs: reminder.candidatePersonIDs,
+                dueAt: reminder.dueAt,
+                dueLabel: reminder.dueLabel,
+                dateParseReason: reminder.dateParseReason,
+                scheduleSubtype: reminder.scheduleSubtype,
+                scheduleExecutionState: "executable_reminder",
+                timeRole: "reminder_trigger",
+                timeExpressionKind: "exact_datetime",
+                timePrecision: "exact_minute",
+                rawTimeExpression: reminder.rawTimeExpression,
+                referenceDate: reminder.referenceDate,
+                referenceDatetime: reminder.referenceDatetime,
+                timezone: reminder.timezone,
+                startAt: reminder.startAt,
+                endAt: reminder.endAt,
+                deadlineRelation: reminder.deadlineRelation,
+                remindAt: tomorrowMismatchReminderAt,
+                commitmentLevel: reminder.commitmentLevel,
+                notificationPolicy: reminder.notificationPolicy,
+                needsSlotConfirmation: false,
+                confirmationBlockers: [],
+                confirmationReasons: [],
+                requiresUserApproval: true,
+                reasonSummary: reminder.reasonSummary,
+                confusionGuard: reminder.confusionGuard,
+                actor: reminder.actor,
+                action: reminder.action,
+                targetPerson: reminder.targetPerson,
+                location: reminder.location,
+                resolvedWindow: reminder.resolvedWindow,
+                resolvedTime: reminder.resolvedTime,
+                recurrenceRule: reminder.recurrenceRule,
+                mutationMatch: reminder.mutationMatch,
+                contextualGuard: reminder.contextualGuard
+            )
+        }
+        do {
+            _ = try pendingUpdates.approve(id: malformedPolicyMismatch.id)
+            throw CheckError.failed("policy/remind mismatch should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let malformedNextTriggerBypass = try malformedUpdate(from: splitEventUpdate) { reminder in
+            PendingUpdateReminderContext(
+                title: reminder.title,
+                targetPersonID: reminder.targetPersonID,
+                targetDisplayName: reminder.targetDisplayName,
+                candidatePersonIDs: reminder.candidatePersonIDs,
+                dueAt: reminder.dueAt,
+                dueLabel: reminder.dueLabel,
+                dateParseReason: reminder.dateParseReason,
+                scheduleSubtype: reminder.scheduleSubtype,
+                scheduleExecutionState: "executable_reminder",
+                timeRole: "reminder_trigger",
+                timeExpressionKind: "exact_datetime",
+                timePrecision: "exact_minute",
+                rawTimeExpression: reminder.rawTimeExpression,
+                referenceDate: reminder.referenceDate,
+                referenceDatetime: reminder.referenceDatetime,
+                timezone: reminder.timezone,
+                startAt: reminder.startAt,
+                endAt: reminder.endAt,
+                deadlineRelation: reminder.deadlineRelation,
+                remindAt: tomorrowMismatchReminderAt,
+                commitmentLevel: reminder.commitmentLevel,
+                notificationPolicy: PendingUpdateNotificationPolicy(
+                    deliveryMode: "reminder",
+                    policySource: "user_explicit",
+                    triggerAtOrNull: nil,
+                    offsetOrNull: nil,
+                    nextTriggerAtOrNull: tomorrowReminderAt,
+                    timezone: "Asia/Shanghai",
+                    requiresConfirmation: false,
+                    defaultAllowed: false
+                ),
+                needsSlotConfirmation: false,
+                confirmationBlockers: [],
+                confirmationReasons: [],
+                requiresUserApproval: true,
+                reasonSummary: reminder.reasonSummary,
+                confusionGuard: reminder.confusionGuard,
+                actor: reminder.actor,
+                action: reminder.action,
+                targetPerson: reminder.targetPerson,
+                location: reminder.location,
+                resolvedWindow: reminder.resolvedWindow,
+                resolvedTime: reminder.resolvedTime,
+                recurrenceRule: reminder.recurrenceRule,
+                mutationMatch: reminder.mutationMatch,
+                contextualGuard: reminder.contextualGuard
+            )
+        }
+        do {
+            _ = try pendingUpdates.approve(id: malformedNextTriggerBypass.id)
+            throw CheckError.failed("non-recurring next_trigger/remind mismatch should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
+
+        let nextThursday = dateOnlyStringForNextWeekday(5)
+        let nextFriday = dateOnlyStringForNextWeekday(6)
+        let deadlineEntry = try rawEntries.create(inputType: .text, rawText: "周五前提交 Alex 材料，周四 18:00 提醒我。")
+        let deadlineResponse = try await extract(deadlineEntry.rawText)
+        let deadlineUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: deadlineEntry.id,
+            proposal: try require(deadlineResponse.memoryProposals.first, "deadline proposal missing")
+        )
+        let deadlineContext = try require(deadlineUpdate.structuredReviewContext?.reminder, "deadline context missing")
+        try expect(deadlineContext.scheduleSubtype == "deadline", "deadline wording should use deadline subtype")
+        try expect(deadlineContext.scheduleExecutionState == "executable_reminder", "deadline with explicit remind_at should be executable after approval")
+        try expect(deadlineContext.dueAt == nextFriday, "deadline due date should stay separate from remind_at")
+        try expect(deadlineContext.deadlineRelation == "before_or_on", "deadline relation should preserve 前 semantics")
+        try expect(deadlineContext.remindAt == "\(nextThursday)T18:00:00+08:00", "deadline reminder should use explicit remind_at")
+        _ = try pendingUpdates.approve(id: deadlineUpdate.id)
+
+        let executableRecurringEntry = try rawEntries.create(inputType: .text, rawText: "每周五 10:00 问 May 论文进度。")
+        let executableRecurringResponse = try await extract(executableRecurringEntry.rawText)
+        let executableRecurringUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: executableRecurringEntry.id,
+            proposal: try require(executableRecurringResponse.memoryProposals.first, "executable recurring proposal missing")
+        )
+        let executableRecurringContext = try require(executableRecurringUpdate.structuredReviewContext?.reminder, "executable recurring context missing")
+        try expect(executableRecurringContext.scheduleSubtype == "recurring", "weekly exact time should stay recurring")
+        try expect(executableRecurringContext.scheduleExecutionState == "executable_reminder", "recurring with exact remind time should be executable after approval")
+        try expect(executableRecurringContext.recurrenceRule?["frequency"] == "weekly", "recurring rule should include frequency")
+        try expect(executableRecurringContext.recurrenceRule?["remind_time_or_null"] == "10:00", "recurring rule should include explicit remind time")
+        try expect(executableRecurringContext.recurrenceRule?["next_trigger_at_or_null"]?.contains("T10:00") == true, "recurring rule should include next trigger")
+        _ = try pendingUpdates.approve(id: executableRecurringUpdate.id)
+
+        let pastTriggerEntry = try rawEntries.create(inputType: .text, rawText: "昨天 20:00 提醒我问 Jason 材料。")
+        let pastTriggerResponse = try await extract(pastTriggerEntry.rawText)
+        let pastTriggerUpdate = try pendingUpdates.createMemoryAtomProposal(
+            sourceEntryID: pastTriggerEntry.id,
+            proposal: try require(pastTriggerResponse.memoryProposals.first, "past trigger proposal missing")
+        )
+        let pastTriggerContext = try require(pastTriggerUpdate.structuredReviewContext?.reminder, "past trigger context missing")
+        try expect(pastTriggerContext.scheduleExecutionState == "draft_schedule_candidate", "past trigger must not be executable")
+        try expect(pastTriggerContext.confirmationReasons.contains("past_trigger"), "past trigger should be a blocker")
+        do {
+            _ = try pendingUpdates.approve(id: pastTriggerUpdate.id)
+            throw CheckError.failed("past trigger should not approve")
+        } catch PendingUpdateError.needsSlotConfirmation {
+        }
     }
 
 
@@ -247,7 +947,7 @@ private struct ProtocolChecker {
         do {
             _ = try parser.parseExtractMemoryResponse(content: invalidCategoryJSON)
             throw CheckError.failed("invalid profile category should be rejected")
-        } catch AIContractError.invalidJSON {
+        } catch is AIContractError {
         }
 
         let emptySourcePatch = PersonProfilePatchProposal(
@@ -671,9 +1371,15 @@ private struct ProtocolChecker {
         let update = try require(scheduleUpdates.first, "schedule update missing")
         try expect(update.proposal?.memoryType == .reminderSource || update.proposal?.hasScheduleSignals == true, "schedule capture should use a reminder-capable memory type")
 
+        let reminderCountBefore = store.reminders.count
         store.confirm(update)
-        try expect(store.sidebarSelection == SidebarSelection.section(.schedule), "approving a schedule item should open schedule")
-        try expect(store.reminders.contains { $0.title.contains("考试") || $0.context.contains("考试") }, "approved schedule item should create a reminder")
+        try expect(store.reminders.count == reminderCountBefore, "blocked schedule item should not create a reminder")
+        try expect(
+            store.statusMessage.localizedCaseInsensitiveContains("slot") ||
+                store.statusMessage.localizedCaseInsensitiveContains("required") ||
+                store.statusMessage.contains("必要信息"),
+            "blocked schedule approval should explain missing details"
+        )
     }
 
     private func checkCaptureViewNoLongerShowsShortcutChips() throws {
@@ -959,9 +1665,9 @@ private struct ProtocolChecker {
         await store.captureForReview("May 今天说她最近压力很大，提醒我这周末关心一下。")
 
         try expect(store.sidebarSelection == SidebarSelection.section(.aiReview), "capture should land in AI Review")
-        try expect(store.pendingUpdates.count == pendingCount + 1, "fallback capture should create a reviewable pending update")
+        try expect(store.pendingUpdates.count > pendingCount, "fallback capture should create reviewable pending updates")
         try expect(store.statusMessage.contains("本地") || store.statusMessage.localizedCaseInsensitiveContains("local"), "fallback capture should explain local draft fallback")
-        let created = try require(store.pendingUpdates.first, "fallback pending update missing")
+        let created = try require(store.pendingUpdates.first { $0.summary.contains("May") || $0.evidence.contains("压力") }, "fallback pending update missing")
         try expect(created.summary.contains("May") || created.summary.contains("压力"), "fallback pending update should preserve user text")
     }
 
@@ -1125,6 +1831,7 @@ private struct ProtocolChecker {
         let userPrompt = try require(messages.last?.content, "extract memory user prompt missing")
 
         try expect(systemPrompt.contains("workflow") && systemPrompt.contains("tool"), "AI prompt should describe a workflow/tool contract")
+        try expect(systemPrompt.contains("约饭") && systemPrompt.contains("行程"), "AI prompt should route social plans as schedule facts")
         try expect(userPrompt.contains(#""known_core_tags""#), "AI user prompt should include structured core tags")
         try expect(userPrompt.contains("研究复盘"), "AI prompt should include user-created core tag names")
         try expect(userPrompt.contains("读论文、实验和研究方向"), "AI prompt should include user-created core tag descriptions")
@@ -1388,6 +2095,42 @@ private struct ProtocolChecker {
         try expect(wide.showsSecondaryEdgeLabels, "wide map can show secondary edge labels")
     }
 
+    private func checkRelationshipVisualToneClassification() throws {
+        let normal = RelationshipEdge(
+            id: "tone-normal",
+            sourceName: "A",
+            targetName: "B",
+            label: "项目伙伴",
+            strength: 0.48,
+            relationKind: "project",
+            tags: ["同学"]
+        )
+        let intimate = RelationshipEdge(
+            id: "tone-intimate",
+            sourceName: "A",
+            targetName: "C",
+            label: "核心朋友",
+            strength: 0.86,
+            relationKind: "friend",
+            tags: ["好朋友"]
+        )
+        let unfriendly = RelationshipEdge(
+            id: "tone-unfriendly",
+            sourceName: "A",
+            targetName: "D",
+            label: "有冲突",
+            strength: 0.91,
+            relationKind: "conflict",
+            tags: ["边界风险"]
+        )
+
+        try expect(normal.visualTone == .normal, "ordinary relationship edges should use the normal visual tone")
+        try expect(intimate.visualTone == .intimate, "close relationship edges should use the intimate visual tone")
+        try expect(unfriendly.visualTone == .unfriendly, "unfriendly relationship labels should override high strength")
+        try expect(RelationshipVisualTone.normal.title(for: .zhCN) == "普通", "relationship tone should expose Chinese labels")
+        try expect(RelationshipVisualTone.unfriendly.title(for: .en) == "Unfriendly", "relationship tone should expose English labels")
+    }
+
     private func checkChineseFirstCopyExistsForCoreNavigation() throws {
         try expect(AppSection.capture.title(for: .zhCN) == "记录", "capture section should have Chinese copy")
         try expect(AppSection.aiReview.title(for: .zhCN) == "整理台", "review desk section should have Chinese copy")
@@ -1534,9 +2277,27 @@ private struct ProtocolChecker {
         )
     }
 
+    private func dateOnlyStringForNextWeekday(_ weekday: Int) -> String {
+        let calendar = Calendar.current
+        let today = Date()
+        let todayWeekday = calendar.component(.weekday, from: today)
+        let delta = (weekday - todayWeekday + 7) % 7
+        let days = delta == 0 ? 7 : delta
+        let date = calendar.date(byAdding: .day, value: days, to: today) ?? today
+        return memoriaDateOnlyString(from: date)
+    }
+
     private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else {
             throw CheckError.failed(message)
+        }
+    }
+
+    private func expectAIContractFailure(_ fixture: String, parser: AIJSONParser) throws {
+        do {
+            _ = try parser.parseExtractMemoryResponse(data: fixtureData(fixture))
+            throw CheckError.failed("\(fixture).json should fail AI contract validation")
+        } catch is AIContractError {
         }
     }
 

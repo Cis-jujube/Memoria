@@ -108,13 +108,28 @@ struct RelationshipMapView: View {
                 .frame(width: 220)
             }
 
-            HStack(spacing: 8) {
-                MapSummaryPill(label: isChinese ? "中心" : "Center", value: centerName)
-                MapSummaryPill(label: isChinese ? "节点" : "Nodes", value: "\(max(graph.nodes.count - 1, 0))")
-                MapSummaryPill(label: isChinese ? "关系" : "Edges", value: "\(graph.edges.count)")
-                if graph.hiddenEdgeCount > 0 {
-                    MapSummaryPill(label: isChinese ? "更多" : "More", value: "\(graph.hiddenEdgeCount)")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    mapSummaryPills
+                    Spacer(minLength: 12)
+                    RelationshipToneLegend(language: store.settings.language)
                 }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    mapSummaryPills
+                    RelationshipToneLegend(language: store.settings.language)
+                }
+            }
+        }
+    }
+
+    private var mapSummaryPills: some View {
+        HStack(spacing: 8) {
+            MapSummaryPill(label: isChinese ? "中心" : "Center", value: centerName)
+            MapSummaryPill(label: isChinese ? "节点" : "Nodes", value: "\(max(graph.nodes.count - 1, 0))")
+            MapSummaryPill(label: isChinese ? "关系" : "Edges", value: "\(graph.edges.count)")
+            if graph.hiddenEdgeCount > 0 {
+                MapSummaryPill(label: isChinese ? "更多" : "More", value: "\(graph.hiddenEdgeCount)")
             }
         }
     }
@@ -134,12 +149,20 @@ struct RelationshipMapView: View {
                         editRelationship(edgeID: edge.id)
                     } label: {
                         HStack(spacing: 12) {
+                            Circle()
+                                .fill(edge.tone.lineColor)
+                                .frame(width: 10, height: 10)
+
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("\(edge.sourceName) -> \(edge.targetName)")
                                     .font(.headline)
-                                Text(edge.displayTag)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 8) {
+                                    Text(edge.displayTag)
+                                    Text(edge.tone.title(for: store.settings.language))
+                                        .foregroundStyle(edge.tone.lineColor)
+                                }
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                             }
 
                             Spacer()
@@ -180,8 +203,24 @@ private struct RelationshipMapCanvas: View {
             let layout = graph.layout(in: proxy.size)
 
             ZStack {
-                Canvas { context, _ in
-                    for edge in layout.edges {
+                Canvas { context, size in
+                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                    for radius in [layout.metrics.firstHopRadius, layout.metrics.secondHopRadius] {
+                        let diameter = CGFloat(radius * 2)
+                        let rect = CGRect(
+                            x: center.x - diameter / 2,
+                            y: center.y - diameter / 2,
+                            width: diameter,
+                            height: diameter
+                        )
+                        context.stroke(
+                            Path(ellipseIn: rect),
+                            with: .color(Color.primary.opacity(radius == layout.metrics.firstHopRadius ? 0.045 : 0.032)),
+                            style: StrokeStyle(lineWidth: 1)
+                        )
+                    }
+
+                    for edge in layout.edges.sorted(by: { $0.depth > $1.depth }) {
                         guard let source = layout.nodes[edge.sourceID],
                               let target = layout.nodes[edge.targetID] else {
                             continue
@@ -189,10 +228,20 @@ private struct RelationshipMapCanvas: View {
                         var path = Path()
                         path.move(to: source.point)
                         path.addLine(to: target.point)
+                        let baseWidth = edge.depth == 1 ? max(1.8, 2.5 * layout.metrics.scale) : max(1.1, 1.55 * layout.metrics.scale)
+                        let opacity = edge.depth == 1 ? 0.82 : 0.46
+                        let dash: [CGFloat] = edge.tone == .unfriendly
+                            ? [CGFloat(max(4, 6 * layout.metrics.scale)), CGFloat(max(3, 4 * layout.metrics.scale))]
+                            : []
                         context.stroke(
                             path,
-                            with: .color(edge.depth == 1 ? Color.memoriaSage.opacity(0.55) : Color.primary.opacity(0.18)),
-                            style: StrokeStyle(lineWidth: CGFloat(edge.depth == 1 ? max(1.3, 2 * layout.metrics.scale) : max(0.8, 1.2 * layout.metrics.scale)))
+                            with: .color(edge.tone.lineColor.opacity(edge.depth == 1 ? 0.18 : 0.10)),
+                            style: StrokeStyle(lineWidth: CGFloat(baseWidth * 3.6), lineCap: .round, dash: dash)
+                        )
+                        context.stroke(
+                            path,
+                            with: .color(edge.tone.lineColor.opacity(opacity)),
+                            style: StrokeStyle(lineWidth: CGFloat(baseWidth), lineCap: .round, dash: dash)
                         )
                     }
                 }
@@ -214,13 +263,7 @@ private struct RelationshipMapCanvas: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.memoriaSage.opacity(0.08), Color.memoriaGold.opacity(0.06), Color.primary.opacity(0.025)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .fill(Color.primary.opacity(0.018))
             )
         }
     }
@@ -229,15 +272,16 @@ private struct RelationshipMapCanvas: View {
     private func edgeLabel(_ edge: PositionedRelationshipGraphEdge, layout: PositionedRelationshipGraph) -> some View {
         let label = Text(edge.displayTag)
             .font(.system(size: max(9, 10 * layout.metrics.scale), weight: .medium))
+            .foregroundStyle(edge.tone.lineColor)
             .lineLimit(1)
             .frame(maxWidth: CGFloat(layout.metrics.labelMaxWidth))
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(.background)
+            .background(.regularMaterial)
             .clipShape(Capsule())
             .overlay {
                 Capsule()
-                    .stroke(edge.isEditable ? Color.memoriaSage.opacity(0.32) : Color.primary.opacity(0.08), lineWidth: 1)
+                    .stroke(edge.tone.lineColor.opacity(edge.isEditable ? 0.42 : 0.18), lineWidth: 1)
             }
 
         if edge.isEditable {
@@ -258,17 +302,20 @@ private struct RelationshipMapNodeView: View {
     let node: PositionedRelationshipNode
 
     var body: some View {
+        let tone = node.tone ?? .normal
+
         VStack(spacing: 5) {
             Text(node.initials)
                 .font(.system(size: node.depth == 0 ? max(14, 17 * node.scale) : max(10, 12 * node.scale), weight: .bold))
-                .foregroundStyle(node.depth == 2 ? Color.memoriaInk : .white)
+                .foregroundStyle(node.depth == 0 ? .white : Color.memoriaInk)
                 .frame(width: node.size, height: node.size)
-                .background(node.depth == 0 ? Color.memoriaInk : node.depth == 1 ? Color.memoriaSage : Color.memoriaGold.opacity(0.55))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(node.depth == 0 ? Color.memoriaInk : tone.softFill)
+                .clipShape(Circle())
                 .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(node.depth == 0 ? 0 : 0.08), lineWidth: 1)
+                    Circle()
+                        .stroke(node.depth == 0 ? Color.memoriaGold.opacity(0.7) : tone.lineColor.opacity(0.58), lineWidth: node.depth == 0 ? 1.4 : 1.1)
                 }
+                .shadow(color: tone.lineColor.opacity(node.depth == 0 ? 0.16 : 0.12), radius: 8, x: 0, y: 3)
 
             Text(node.name)
                 .font(.system(size: max(10, 12 * node.scale), weight: node.depth == 0 ? .semibold : .medium))
@@ -277,8 +324,6 @@ private struct RelationshipMapNodeView: View {
         }
         .padding(.horizontal, max(5, 8 * node.scale))
         .padding(.vertical, max(4, 6 * node.scale))
-        .background(node.depth == 0 ? Color.clear : Color.primary.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -340,13 +385,19 @@ private struct TwoHopRelationshipGraph {
 
         let hiddenCount = max(visibleEdges.count - maxVisibleEdges, 0)
         visibleEdges = Array(visibleEdges.prefix(maxVisibleEdges))
+        var toneByNodeID: [String: RelationshipVisualTone] = [:]
+        for edge in visibleEdges {
+            mergeTone(edge.visualTone, for: edge.sourceID, into: &toneByNodeID, centerID: centerID)
+            mergeTone(edge.visualTone, for: edge.targetID, into: &toneByNodeID, centerID: centerID)
+        }
 
         var nodesByID: [String: RelationshipNode] = [
             centerID: RelationshipNode(
                 id: centerID,
                 name: centerName,
                 initials: centerID == "me" ? "ME" : initials(for: centerName),
-                depth: 0
+                depth: 0,
+                tone: nil
             )
         ]
 
@@ -362,7 +413,8 @@ private struct TwoHopRelationshipGraph {
                     id: endpoint.0,
                     name: person?.displayName ?? endpoint.1,
                     initials: person?.initials ?? initials(for: endpoint.1),
-                    depth: endpoint.0 == centerID ? 0 : depth
+                    depth: endpoint.0 == centerID ? 0 : depth,
+                    tone: toneByNodeID[endpoint.0]
                 )
             }
         }
@@ -375,6 +427,7 @@ private struct TwoHopRelationshipGraph {
                 sourceName: edge.sourceName,
                 targetName: edge.targetName,
                 displayTag: edge.displayTag(priorities: priorities),
+                tone: edge.visualTone,
                 depth: edge.sourceID == centerID || edge.targetID == centerID ? 1 : 2,
                 isAIInferred: edge.isAIInferred,
                 isEditable: !edge.id.hasPrefix("self-edge-")
@@ -497,6 +550,34 @@ private struct TwoHopRelationshipGraph {
         return String(name.prefix(2)).uppercased()
     }
 
+    private static func mergeTone(
+        _ tone: RelationshipVisualTone,
+        for nodeID: String,
+        into tones: inout [String: RelationshipVisualTone],
+        centerID: String
+    ) {
+        guard nodeID != centerID else { return }
+        guard let existing = tones[nodeID] else {
+            tones[nodeID] = tone
+            return
+        }
+        tones[nodeID] = dominantTone(existing, tone)
+    }
+
+    private static func dominantTone(_ lhs: RelationshipVisualTone, _ rhs: RelationshipVisualTone) -> RelationshipVisualTone {
+        func rank(_ tone: RelationshipVisualTone) -> Int {
+            switch tone {
+            case .unfriendly:
+                return 3
+            case .intimate:
+                return 2
+            case .normal:
+                return 1
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
+    }
+
     private static func selfEdges(centerName: String, people: [FriendPerson]) -> [RelationshipEdge] {
         people.map { person in
             let label = person.relationLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "朋友" : person.relationLabel
@@ -522,6 +603,7 @@ private struct RelationshipNode: Identifiable {
     let name: String
     let initials: String
     let depth: Int
+    let tone: RelationshipVisualTone?
 }
 
 private struct PositionedRelationshipNode: Identifiable {
@@ -529,6 +611,7 @@ private struct PositionedRelationshipNode: Identifiable {
     let name: String
     let initials: String
     let depth: Int
+    let tone: RelationshipVisualTone?
     let point: CGPoint
     let size: CGFloat
     let labelMaxWidth: CGFloat
@@ -545,6 +628,7 @@ private struct PositionedRelationshipNode: Identifiable {
         name = node.name
         initials = node.initials
         depth = node.depth
+        tone = node.tone
         self.point = point
         self.size = size
         self.labelMaxWidth = labelMaxWidth
@@ -559,6 +643,7 @@ private struct RelationshipGraphEdge: Identifiable {
     let sourceName: String
     let targetName: String
     let displayTag: String
+    let tone: RelationshipVisualTone
     let depth: Int
     let isAIInferred: Bool
     let isEditable: Bool
@@ -571,6 +656,7 @@ private struct PositionedRelationshipGraphEdge: Identifiable {
     let sourceName: String
     let targetName: String
     let displayTag: String
+    let tone: RelationshipVisualTone
     let depth: Int
     let isAIInferred: Bool
     let isEditable: Bool
@@ -588,6 +674,7 @@ private struct PositionedRelationshipGraphEdge: Identifiable {
         sourceName = edge.sourceName
         targetName = edge.targetName
         displayTag = edge.displayTag
+        tone = edge.tone
         depth = edge.depth
         isAIInferred = edge.isAIInferred
         isEditable = edge.isEditable

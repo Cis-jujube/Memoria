@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.1",
+  "contract_name": "extract_memory",
+  "entry_summary": "bad candidates",
+  "memory_proposals": [],
+  "person_fact_proposals": [],
+  "reminder_proposals": [
+    {
+      "proposal_id": "rp-1",
+      "title": "问 Alex",
+      "target_person_id": "demo-alex",
+      "target_display_name": "Alex",
+      "candidate_person_ids": ["demo-may"],
+      "due_at": null,
+      "due_label": "下周三",
+      "source_entry_id": null,
+      "source_quote": "下周三提醒我问 Alex",
+      "confidence": 0.8,
+      "is_ai_inferred": false,
+      "legacy_text": "下周三提醒我问 Alex"
+    }
+  ],
+  "gift_signal_proposals": [],
+  "conflicts": [],
+  "follow_up_questions": []
+}

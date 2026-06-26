@@ -1,0 +1,85 @@
+{
+  "fixture_schema_version": "1.0",
+  "purpose": "Review Desk UI and accessibility QA scenarios for extract_memory v1.1.",
+  "screenshot_output_directory": "macos/TestArtifacts/ReviewUI",
+  "window_sizes": [
+    "1280x840",
+    "900x720",
+    "640x720",
+    "520x720"
+  ],
+  "pending_updates": [
+    {
+      "id": "review-ui-friend-fact",
+      "scenario": "friend_fact",
+      "proposal_type": "person_profile_patch",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "friendDossier",
+      "expected_labels": ["旧值 vs 新建议", "为什么是这个人", "来自这句话"],
+      "source_quote": "Alex 喜欢火锅，不吃香菜。",
+      "old_value": "喜欢薯片。",
+      "new_value": "喜欢火锅；不吃香菜。",
+      "approval_requirement": "must show old/new comparison before approval"
+    },
+    {
+      "id": "review-ui-reminder-unclear-date",
+      "scenario": "schedule_unclear_date",
+      "proposal_type": "memory_atom",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "schedule",
+      "expected_labels": ["未定日期", "为什么日期这样处理", "来自这句话"],
+      "source_quote": "下周三提醒我问 Jason 内推材料",
+      "due_at": null,
+      "due_label": "下周三",
+      "approval_requirement": "approve disabled until concrete due_at is edited"
+    },
+    {
+      "id": "review-ui-gift-risk",
+      "scenario": "gift_signal_high_risk",
+      "proposal_type": "memory_atom",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "friendDossier",
+      "expected_labels": ["高风险礼物", "送礼前需要确认", "确认问题"],
+      "source_quote": "May 想试拍立得相纸和小型香水，不要让她知道我在准备礼物。",
+      "risk_tags": ["surprise_sensitive", "preference_uncertain"],
+      "approval_requirement": "approve disabled until risk acknowledgement is checked"
+    },
+    {
+      "id": "review-ui-schema-failure",
+      "scenario": "schema_failure",
+      "proposal_type": "memory_atom",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "selfSearch",
+      "expected_labels": ["AI 输出结构不完整", "原文已保存"],
+      "source_quote": "AI 输出缺 source_quote",
+      "approval_requirement": "must explain next step instead of only showing a technical error"
+    },
+    {
+      "id": "review-ui-same-name",
+      "scenario": "candidate_people",
+      "proposal_type": "memory_atom",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "friendDossier",
+      "expected_labels": ["找到多个可能的人，请先选择"],
+      "source_quote": "Alex 说他换工作了。",
+      "candidate_person_ids": ["demo-alex", "manual-alex"],
+      "approval_requirement": "approve disabled until target person is selected"
+    },
+    {
+      "id": "review-ui-sensitive-reflection",
+      "scenario": "sensitive_self_reflection",
+      "proposal_type": "memory_atom",
+      "payload_schema_version": "1.1",
+      "payload_contract_name": "pending_update_payload",
+      "review_category": "selfSearch",
+      "expected_labels": ["敏感内容", "AI 推断，确认前不会保存成事实"],
+      "source_quote": "我最近在关系里有点焦虑，不确定是不是该说出来。",
+      "approval_requirement": "sensitive summary visible, full source controlled by disclosure"
+    }
+  ]
+}

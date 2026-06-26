@@ -30,6 +30,7 @@ public final class DashboardStore: ObservableObject {
     @Published public private(set) var relationshipTagPriorities: [RelationshipTagPriority]
     @Published public private(set) var importPreview: TransferImportPreview?
     @Published public private(set) var themeNamesByMemoryID: [String: [String]] = [:]
+    @Published public private(set) var recentUndoableUpdate: PendingUpdate?
 
     private var database: LocalSQLiteStore?
     private let keyStore = SecureAPIKeyStore()
@@ -364,7 +365,96 @@ public final class DashboardStore: ObservableObject {
     }
 
     public func discard(_ update: PendingUpdate) {
-        reject(update)
+        reject(update, reason: nil)
+    }
+
+    public func discard(_ update: PendingUpdate, reason: String?) {
+        reject(update, reason: reason)
+    }
+
+    public func undoLastApproval() {
+        guard let update = recentUndoableUpdate else { return }
+        do {
+            guard let database else { return }
+            _ = try PendingUpdateRepository(database: database).undoApproval(id: update.id)
+            try reloadSnapshot()
+            recentUndoableUpdate = nil
+            statusMessage = resolvedLanguage(settings.language) == .zhCN
+                ? "已撤销，原文仍保留。"
+                : "Undone. The original source remains saved."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    public func editMemoryReview(
+        _ update: PendingUpdate,
+        title: String,
+        summary: String,
+        content: String,
+        memoryType: MemoryAtomType?,
+        targetPersonID: String?,
+        targetDisplayName: String?,
+        reminderDueAt: String?,
+        reminderDueLabel: String?,
+        giftBudgetHint: String?,
+        giftOccasion: String?,
+        giftRisk: String?,
+        giftConfirmationQuestion: String?,
+        giftRiskTags: [GiftSocialRisk]?
+    ) {
+        do {
+            guard let database else { return }
+            _ = try PendingUpdateRepository(database: database).edit(
+                id: update.id,
+                title: title,
+                summary: summary,
+                content: content,
+                memoryType: memoryType,
+                targetPersonID: targetPersonID,
+                targetDisplayName: targetDisplayName,
+                reminderDueAt: reminderDueAt,
+                reminderDueLabel: reminderDueLabel,
+                giftBudgetHint: giftBudgetHint,
+                giftOccasion: giftOccasion,
+                giftRisk: giftRisk,
+                giftConfirmationQuestion: giftConfirmationQuestion,
+                giftRiskTags: giftRiskTags
+            )
+            try reloadSnapshot()
+            statusMessage = resolvedLanguage(settings.language) == .zhCN
+                ? "已保存修改，继续审核。"
+                : "Saved edits. Continue reviewing."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    public func editProfilePatchReview(
+        _ update: PendingUpdate,
+        targetPersonID: String?,
+        targetDisplayName: String,
+        profileCategory: PersonProfileCategory,
+        proposedValue: String,
+        valueStruct: ProfileValueStruct?
+    ) {
+        do {
+            guard let database else { return }
+            _ = try PendingUpdateRepository(database: database).editPersonProfilePatch(
+                id: update.id,
+                targetPersonID: targetPersonID,
+                targetDisplayName: targetDisplayName,
+                profileCategory: profileCategory,
+                proposedValue: proposedValue,
+                valueStruct: valueStruct
+            )
+            try reloadSnapshot()
+            statusMessage = resolvedLanguage(settings.language) == .zhCN
+                ? "已保存朋友档案修改，继续审核。"
+                : "Saved profile patch edits. Continue reviewing."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     public func quickCapture() {
@@ -644,7 +734,27 @@ public final class DashboardStore: ObservableObject {
                 _ = try pending.createMemoryAtomProposal(sourceEntryID: rawEntry.id, proposal: proposal)
             }
             for proposal in constrainedResponse.personFactProposals {
-                _ = try pending.createPersonProfilePatchProposal(sourceEntryID: rawEntry.id, proposal: proposal)
+                _ = try pending.createPersonProfilePatchProposal(
+                    sourceEntryID: rawEntry.id,
+                    proposal: proposal,
+                    envelope: proposal.pendingUpdateEnvelope()
+                )
+            }
+            for proposal in constrainedResponse.reminderProposals {
+                let memoryProposal = proposal.memoryAtomProposal()
+                _ = try pending.createMemoryAtomProposal(
+                    sourceEntryID: rawEntry.id,
+                    proposal: memoryProposal,
+                    envelope: proposal.pendingUpdateEnvelope()
+                )
+            }
+            for proposal in constrainedResponse.giftSignalProposals {
+                let memoryProposal = proposal.memoryAtomProposal()
+                _ = try pending.createMemoryAtomProposal(
+                    sourceEntryID: rawEntry.id,
+                    proposal: memoryProposal,
+                    envelope: proposal.pendingUpdateEnvelope()
+                )
             }
 
             if let fallbackMessage {
@@ -675,8 +785,11 @@ public final class DashboardStore: ObservableObject {
         do {
             guard let database else { return }
             let destination = destinationSection(for: update.reviewCategory)
-            _ = try PendingUpdateRepository(database: database).approve(id: update.id)
+            let repository = PendingUpdateRepository(database: database)
+            _ = try repository.approve(id: update.id)
+            let approvedUpdate = try repository.fetch(id: update.id)
             try reloadSnapshot()
+            recentUndoableUpdate = approvedUpdate?.canUndoApproval == true ? approvedUpdate : nil
             sidebarSelection = .section(destination)
             statusMessage = "已批准入库。"
         } catch {
@@ -684,11 +797,14 @@ public final class DashboardStore: ObservableObject {
         }
     }
 
-    private func reject(_ update: PendingUpdate) {
+    private func reject(_ update: PendingUpdate, reason: String?) {
         do {
             guard let database else { return }
-            try PendingUpdateRepository(database: database).reject(id: update.id)
+            try PendingUpdateRepository(database: database).reject(id: update.id, reason: reason)
             try reloadSnapshot()
+            if recentUndoableUpdate?.id == update.id {
+                recentUndoableUpdate = nil
+            }
             statusMessage = "Proposal rejected. Raw entry remains saved."
         } catch {
             statusMessage = error.localizedDescription
@@ -883,6 +999,82 @@ public final class DashboardStore: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    public func markMemoryWrong(_ memory: MemoryAtom) {
+        let disputed = MemoryAtom(
+            id: memory.id,
+            sourceEntryID: memory.sourceEntryID,
+            type: memory.type,
+            title: memory.title,
+            summary: memory.summary,
+            content: memory.content,
+            sourceQuote: memory.sourceQuote,
+            confidence: memory.confidence,
+            sensitivity: memory.sensitivity,
+            isAIInferred: memory.isAIInferred,
+            status: .disputed,
+            eventTime: memory.eventTime,
+            validUntil: memory.validUntil,
+            createdAt: memory.createdAt,
+            updatedAt: memoriaTimestamp()
+        )
+        do {
+            try database?.upsertMemoryAtom(disputed)
+            try reloadSnapshot()
+            statusMessage = resolvedLanguage(settings.language) == .zhCN ? "已标记为错误记忆。" : "Marked memory as disputed."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    public func createChangePersonCorrection(for memory: MemoryAtom) {
+        createMemoryCorrection(
+            memory: memory,
+            titlePrefix: resolvedLanguage(settings.language) == .zhCN ? "改给另一个人" : "Move to another person",
+            contentSuffix: resolvedLanguage(settings.language) == .zhCN ? "请选择正确的人物后再批准。" : "Choose the correct person before approving.",
+            freshness: nil
+        )
+    }
+
+    public func createReplacementFactCorrection(for memory: MemoryAtom, person: FriendPerson) {
+        let patch = PersonProfilePatchProposal(
+            targetPersonID: person.id,
+            targetDisplayName: person.displayName,
+            profileCategory: .aiInference,
+            proposedValue: memory.summary,
+            sourceQuote: memory.sourceQuote ?? memory.summary,
+            confidence: 1,
+            sensitivity: memory.sensitivity,
+            isAIInferred: false
+        )
+        do {
+            guard let database else { return }
+            _ = try PendingUpdateRepository(database: database).createPersonProfilePatchProposal(
+                sourceEntryID: memory.sourceEntryID,
+                proposal: patch,
+                envelope: patch.pendingUpdateEnvelope()
+            )
+            try reloadSnapshot()
+            openReviewDesk(category: .friendDossier)
+            statusMessage = resolvedLanguage(settings.language) == .zhCN ? "已生成替换事实待审项。" : "Created a replacement-fact review item."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    public func createStaleCorrection(for memory: MemoryAtom) {
+        createMemoryCorrection(
+            memory: memory,
+            titlePrefix: resolvedLanguage(settings.language) == .zhCN ? "标记过期" : "Mark stale",
+            contentSuffix: resolvedLanguage(settings.language) == .zhCN ? "这条信息可能已经过期，批准后保留来源并作为过期线索处理。" : "This may be stale. Approval keeps source trace and records the stale signal.",
+            freshness: PendingUpdateFreshness(
+                effectiveStatus: "stale",
+                lastObserved: memoriaDateOnlyString(),
+                stalenessReason: resolvedLanguage(settings.language) == .zhCN ? "用户从朋友详情发起过期纠错。" : "User started stale correction from person detail.",
+                supersedesMemoryID: memory.id
+            )
+        )
     }
 
     public func nextAction(for person: FriendPerson) -> String {
@@ -1309,6 +1501,57 @@ private extension DashboardStore {
             relationshipEdgesToCreate: bundle.relationshipEdges.filter { !existingEdgeIDs.contains($0.id) }.count,
             relationshipEdgesToUpdate: bundle.relationshipEdges.filter { existingEdgeIDs.contains($0.id) }.count
         )
+    }
+
+    func createMemoryCorrection(
+        memory: MemoryAtom,
+        titlePrefix: String,
+        contentSuffix: String,
+        freshness: PendingUpdateFreshness?
+    ) {
+        let proposal = MemoryAtomProposal(
+            proposalType: .memoryAtom,
+            memoryType: memory.type,
+            title: "\(titlePrefix)：\(memory.title)",
+            summary: memory.summary,
+            content: [memory.content, contentSuffix].joined(separator: "\n"),
+            sourceQuote: memory.sourceQuote ?? memory.summary,
+            confidence: 1,
+            sensitivity: memory.sensitivity,
+            isAIInferred: false,
+            relatedPeople: [],
+            themes: [],
+            followUpQuestions: [contentSuffix],
+            suggestedActions: []
+        )
+        let envelope = PendingUpdatePayloadEnvelope(
+            proposalKind: PendingProposalType.memoryAtom,
+            proposal: proposal,
+            structuredContext: nil,
+            reviewExplanation: PendingUpdateReviewExplanation(
+                targetMatchReason: "用户从已确认记忆发起纠错，批准前需要重新确认目标。",
+                categoryReason: "这是一条已确认资料的纠错待审项。",
+                dateParseReason: nil,
+                riskReason: memory.sensitivity == .normal ? nil : "原记忆包含私密或敏感内容。",
+                confidenceReason: "纠错由用户主动发起。"
+            ),
+            freshness: freshness,
+            approvalResult: nil,
+            undo: nil
+        )
+        do {
+            guard let database else { return }
+            _ = try PendingUpdateRepository(database: database).createMemoryAtomProposal(
+                sourceEntryID: memory.sourceEntryID,
+                proposal: proposal,
+                envelope: envelope
+            )
+            try reloadSnapshot()
+            openReviewDesk(category: ReviewCategory.inferred(from: proposal))
+            statusMessage = resolvedLanguage(settings.language) == .zhCN ? "已生成纠错待审项。" : "Created a correction review item."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 }
 

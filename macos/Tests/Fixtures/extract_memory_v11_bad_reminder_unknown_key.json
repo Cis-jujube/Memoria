@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.1",
+  "contract_name": "extract_memory",
+  "entry_summary": "bad reminder",
+  "memory_proposals": [],
+  "person_fact_proposals": [],
+  "reminder_proposals": [
+    {
+      "proposal_id": "rp-1",
+      "title": "问 Jason",
+      "target_person_id": null,
+      "target_display_name": "Jason",
+      "candidate_person_ids": [],
+      "due_at": null,
+      "due_label": "下周三",
+      "source_entry_id": null,
+      "source_quote": "下周三提醒我问 Jason",
+      "confidence": 0.8,
+      "is_ai_inferred": false,
+      "legacy_text": "下周三提醒我问 Jason",
+      "extra": "reject me"
+    }
+  ],
+  "gift_signal_proposals": [],
+  "conflicts": [],
+  "follow_up_questions": []
+}

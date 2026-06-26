@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.1",
+  "contract_name": "extract_memory",
+  "entry_summary": "bad gift risk",
+  "memory_proposals": [],
+  "person_fact_proposals": [],
+  "reminder_proposals": [],
+  "gift_signal_proposals": [
+    {
+      "proposal_id": "gp-1",
+      "target_person_id": null,
+      "target_display_name": "May",
+      "candidate_person_ids": [],
+      "signal_summary": "May may like perfume.",
+      "occasion": "unknown",
+      "budget_hint": null,
+      "risk_tags": ["not_a_real_risk"],
+      "risk": "unknown",
+      "confirmation_question": "确认吗？",
+      "source_quote": "May may like perfume.",
+      "confidence": 0.8,
+      "is_ai_inferred": true,
+      "legacy_text": "May may like perfume."
+    }
+  ],
+  "conflicts": [],
+  "follow_up_questions": []
+}

@@ -463,6 +463,24 @@ public let defaultRelationshipTagPriorities: [RelationshipTagPriority] = [
     RelationshipTagPriority(tag: "弱连接", rank: 200)
 ]
 
+public enum RelationshipVisualTone: String, CaseIterable, Sendable {
+    case normal
+    case intimate
+    case unfriendly
+
+    public func title(for language: LanguagePreference) -> String {
+        let isChinese = resolvedLanguage(language) == .zhCN
+        switch self {
+        case .normal:
+            return isChinese ? "普通" : "Normal"
+        case .intimate:
+            return isChinese ? "亲密" : "Intimate"
+        case .unfriendly:
+            return isChinese ? "不友好" : "Unfriendly"
+        }
+    }
+}
+
 public enum GroupFilter: String, CaseIterable, Identifiable, Sendable {
     case classmates = "Classmates"
     case studyAbroad = "Study Abroad"
@@ -1007,14 +1025,86 @@ public struct PendingUpdate: Identifiable, Equatable, Sendable {
 
     public var proposal: MemoryAtomProposal? {
         guard proposalType == .memoryAtom else { return nil }
-        guard let data = payloadJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(MemoryAtomProposal.self, from: data)
+        return try? memoryAtomProposalForReview()
     }
 
     public var profilePatchProposal: PersonProfilePatchProposal? {
         guard proposalType == .personProfilePatch else { return nil }
-        guard let data = payloadJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(PersonProfilePatchProposal.self, from: data)
+        return try? profilePatchProposalForReview()
+    }
+
+    public func memoryAtomProposalForReview() throws -> MemoryAtomProposal {
+        guard proposalType == .memoryAtom else {
+            throw AIContractError.unsupportedProposalType(proposalType.rawValue)
+        }
+        let data = Data(payloadJSON.utf8)
+        if let proposal = try? JSONDecoder().decode(MemoryAtomProposal.self, from: data) {
+            return proposal
+        }
+        try PendingUpdatePayloadEnvelopeValidator.validate(data: data, expectedProposalKind: .memoryAtom)
+        let envelope = try JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: data)
+        return envelope.proposal
+    }
+
+    public func profilePatchProposalForReview() throws -> PersonProfilePatchProposal {
+        guard proposalType == .personProfilePatch else {
+            throw AIContractError.unsupportedProposalType(proposalType.rawValue)
+        }
+        let data = Data(payloadJSON.utf8)
+        if let proposal = try? JSONDecoder().decode(PersonProfilePatchProposal.self, from: data) {
+            return proposal
+        }
+        try PendingUpdatePayloadEnvelopeValidator.validate(data: data, expectedProposalKind: .personProfilePatch)
+        let envelope = try JSONDecoder().decode(PendingUpdatePayloadEnvelope<PersonProfilePatchProposal>.self, from: data)
+        return envelope.proposal
+    }
+
+    public var structuredReviewContext: PendingUpdateStructuredReviewContext? {
+        let data = Data(payloadJSON.utf8)
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: data) {
+            return envelope.structuredContext
+        }
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<PersonProfilePatchProposal>.self, from: data) {
+            return envelope.structuredContext
+        }
+        return nil
+    }
+
+    public var reviewExplanation: PendingUpdateReviewExplanation? {
+        let data = Data(payloadJSON.utf8)
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: data) {
+            return envelope.reviewExplanation
+        }
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<PersonProfilePatchProposal>.self, from: data) {
+            return envelope.reviewExplanation
+        }
+        return nil
+    }
+
+    public var freshness: PendingUpdateFreshness? {
+        let data = Data(payloadJSON.utf8)
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: data) {
+            return envelope.freshness
+        }
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<PersonProfilePatchProposal>.self, from: data) {
+            return envelope.freshness
+        }
+        return nil
+    }
+
+    public var undoState: String? {
+        let data = Data(payloadJSON.utf8)
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<MemoryAtomProposal>.self, from: data) {
+            return envelope.undo?.state
+        }
+        if let envelope = try? JSONDecoder().decode(PendingUpdatePayloadEnvelope<PersonProfilePatchProposal>.self, from: data) {
+            return envelope.undo?.state
+        }
+        return nil
+    }
+
+    public var canUndoApproval: Bool {
+        status == .approved && undoState == "available"
     }
 
     public var type: String {
@@ -1545,6 +1635,19 @@ public struct RelationshipEdge: Identifiable, Equatable, Sendable {
         return label
     }
 
+    public var visualTone: RelationshipVisualTone {
+        let terms = [relationKind, label, aiPrimaryTag ?? "", manualPrimaryTag ?? ""] + tags
+        if Self.containsAny(terms, keywords: Self.unfriendlyToneKeywords) {
+            return .unfriendly
+        }
+
+        if strength >= 0.72 || Self.containsAny(terms, keywords: Self.intimateToneKeywords) {
+            return .intimate
+        }
+
+        return .normal
+    }
+
     private static func normalizedTags(_ values: [String]) -> [String] {
         values.reduce(into: [String]()) { result, value in
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1557,6 +1660,26 @@ public struct RelationshipEdge: Identifiable, Equatable, Sendable {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static let intimateToneKeywords = [
+        "亲密", "核心", "好朋友", "挚友", "密友", "恋人", "伴侣", "家人", "信任",
+        "intimate", "close", "best friend", "partner", "family", "trusted"
+    ]
+
+    private static let unfriendlyToneKeywords = [
+        "不友好", "冲突", "矛盾", "敌对", "疏远", "冷淡", "拉黑", "屏蔽", "讨厌",
+        "踩雷", "尴尬", "边界风险", "unfriendly", "conflict", "hostile", "distant",
+        "blocked", "avoid", "negative"
+    ]
+
+    private static func containsAny(_ terms: [String], keywords: [String]) -> Bool {
+        let haystack = terms
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .lowercased()
+        return keywords.contains { haystack.contains($0.lowercased()) }
     }
 }
 

@@ -1,0 +1,279 @@
+{
+  "schema_version": "1.1",
+  "contract_name": "extract_memory",
+  "entry_summary": "Jason has a referral reminder and May has a gift signal.",
+  "memory_proposals": [],
+  "person_fact_proposals": [
+    {
+      "target_person_id": "demo-may",
+      "target_display_name": "May",
+      "profile_category": "dietary_allergy",
+      "proposed_value": "不喜欢香菜，但不是过敏。",
+      "value_struct": {
+        "kind": "dislike",
+        "item": "香菜",
+        "severity": "low"
+      },
+      "source_quote": "May 不喜欢香菜，但不是过敏。",
+      "confidence": 0.92,
+      "sensitivity": "normal",
+      "is_ai_inferred": false,
+      "merge_strategy": "append_unique",
+      "classification": {
+        "proposition_units": [
+          {
+            "unit_id": "u1",
+            "source_span": "May 不喜欢香菜，但不是过敏。",
+            "propositional_content": "May dislikes cilantro but this is not an allergy",
+            "attitude_holder": "user",
+            "intentional_mode": "belief/assertion",
+            "direction_of_fit": "mind_to_world",
+            "evidentiality": "direct_observation",
+            "confidence_basis": "user states the preference directly",
+            "domain_object": "person_fact",
+            "candidate_workflow": "person_fact/dietary_allergy",
+            "candidate_storage_targets": [
+              "person_fact"
+            ],
+            "proposal_kind": "write_candidate"
+          }
+        ],
+        "semantic_primary_unit_id": "u1",
+        "workflow_primary_unit_id": "u1",
+        "secondary_unit_ids": [],
+        "semantic_primary": "u1:May cilantro dislike",
+        "workflow_primary": "person_fact/dietary_allergy",
+        "secondary_workflows": [],
+        "storage_targets": [
+          "person_fact"
+        ],
+        "retention_policy": "write_candidate",
+        "illocutionary_force": "assertion",
+        "domain_frame": "friend_profile",
+        "operation": "create",
+        "opportunity_type": "none",
+        "asset_value": [
+          "profile_completeness"
+        ],
+        "sensitivity_domain": "none",
+        "severity": "none",
+        "privacy_display_risk": "none",
+        "visibility_preference": "default",
+        "requires_discreet_review": false,
+        "ambiguous_slots": [],
+        "candidate_interpretations": [
+          {
+            "workflow_primary": "person_fact/dietary_allergy",
+            "reason": "用户直接陈述 May 的忌口偏好。"
+          }
+        ],
+        "blocked_decision": null,
+        "confirmation_question": null,
+        "reason_summary": "这是朋友档案事实，不是用户自我反思或日程。",
+        "confusion_guard": [
+          "friend_fact_vs_self_reflection"
+        ]
+      }
+    }
+  ],
+  "reminder_proposals": [
+    {
+      "proposal_id": "rp-1",
+      "title": "问 Jason 内推材料",
+      "target_person_id": null,
+      "target_display_name": "Jason",
+      "candidate_person_ids": [],
+      "due_at": "2026-06-24T10:00:00+08:00",
+      "due_label": "下周三",
+      "source_entry_id": "raw-v11",
+      "source_quote": "下周三提醒我问 Jason 内推材料",
+      "source_quote_start": 0,
+      "source_quote_end": 18,
+      "confidence": 0.91,
+      "is_ai_inferred": false,
+      "legacy_text": "下周三提醒我问 Jason 内推材料",
+      "schedule_subtype": "follow_up",
+      "schedule_execution_state": "executable_reminder",
+      "time_role": "nonsense",
+      "time_expression_kind": "exact_datetime",
+      "time_precision": "exact_minute",
+      "raw_time_expression": "下周三",
+      "reference_date": "2026-06-19",
+      "reference_datetime": "2026-06-19T10:00:00+08:00",
+      "timezone": "Asia/Shanghai",
+      "start_at": null,
+      "end_at": null,
+      "deadline_relation": null,
+      "remind_at": "2026-06-24T10:00:00+08:00",
+      "commitment_level": "intended",
+      "notification_policy": {
+        "delivery_mode": "reminder",
+        "policy_source": "user_explicit",
+        "trigger_at_or_null": "2026-06-24T10:00:00+08:00",
+        "offset_or_null": null,
+        "next_trigger_at_or_null": null,
+        "timezone": "Asia/Shanghai",
+        "requires_confirmation": false,
+        "default_allowed": false
+      },
+      "needs_slot_confirmation": false,
+      "confirmation_blockers": [],
+      "confirmation_reasons": [],
+      "requires_user_approval": true,
+      "reason_summary": "用户要求下周三跟进 Jason 内推材料，但没有给出具体提醒时间或确认默认提醒策略。",
+      "confusion_guard": [
+        "schedule_vs_friend_fact"
+      ],
+      "actor": "user",
+      "action": "ask",
+      "target_person": "Jason",
+      "location": null,
+      "resolved_window": null,
+      "resolved_time": null,
+      "recurrence_rule": null,
+      "mutation_match": null,
+      "contextual_guard": null,
+      "classification": {
+        "proposition_units": [
+          {
+            "unit_id": "u1",
+            "source_span": "问 Jason 内推材料",
+            "propositional_content": "the user intends to ask Jason about referral materials",
+            "attitude_holder": "user",
+            "intentional_mode": "intention",
+            "direction_of_fit": "world_to_mind",
+            "evidentiality": "direct_observation",
+            "confidence_basis": "user explicitly asks for a reminder",
+            "domain_object": "schedule",
+            "candidate_workflow": "reminder_source/follow_up",
+            "candidate_storage_targets": [
+              "reminder_source"
+            ],
+            "proposal_kind": "workflow_candidate"
+          }
+        ],
+        "semantic_primary_unit_id": "u1",
+        "workflow_primary_unit_id": "u1",
+        "secondary_unit_ids": [],
+        "semantic_primary": "u1:user follow-up with Jason",
+        "workflow_primary": "reminder_source/follow_up",
+        "secondary_workflows": [],
+        "storage_targets": [
+          "reminder_source"
+        ],
+        "retention_policy": "write_candidate",
+        "illocutionary_force": "directive_to_system",
+        "domain_frame": "schedule",
+        "operation": "create",
+        "opportunity_type": "follow_up",
+        "asset_value": [
+          "relationship_signal"
+        ],
+        "sensitivity_domain": "none",
+        "severity": "none",
+        "privacy_display_risk": "none",
+        "visibility_preference": "default",
+        "requires_discreet_review": false,
+        "ambiguous_slots": [
+          "notification_policy"
+        ],
+        "candidate_interpretations": [
+          {
+            "workflow_primary": "reminder_source/follow_up",
+            "reason": "用户要求系统下周三提醒跟进。"
+          }
+        ],
+        "blocked_decision": "cannot_create_executable_reminder_until_notification_policy_confirmed",
+        "confirmation_question": "你希望我在下周三几点提醒你？",
+        "reason_summary": "这是用户对系统的提醒 directive，不是朋友档案本身。",
+        "confusion_guard": [
+          "schedule_vs_friend_fact"
+        ]
+      }
+    }
+  ],
+  "gift_signal_proposals": [
+    {
+      "proposal_id": "gp-1",
+      "target_person_id": "demo-may",
+      "target_display_name": "May",
+      "candidate_person_ids": [
+        "demo-may"
+      ],
+      "signal_summary": "May 想试拍立得相纸和小型香水。",
+      "occasion": "unknown",
+      "budget_hint": null,
+      "risk_tags": [
+        "preference_uncertain",
+        "surprise_sensitive"
+      ],
+      "risk": "香味和惊喜风险需要先确认。",
+      "confirmation_question": "May 最近更偏哪种香味，是否会介意提前知道？",
+      "source_quote": "May 想试拍立得相纸和小型香水，不要让她知道我在准备礼物。",
+      "source_quote_start": 0,
+      "source_quote_end": 32,
+      "confidence": 0.88,
+      "is_ai_inferred": false,
+      "legacy_text": "May 想试拍立得相纸和小型香水",
+      "classification": {
+        "proposition_units": [
+          {
+            "unit_id": "u1",
+            "source_span": "May 想试拍立得相纸和小型香水",
+            "propositional_content": "May wants to try instant camera paper and small perfume",
+            "attitude_holder": "May",
+            "intentional_mode": "desire",
+            "direction_of_fit": "world_to_mind",
+            "evidentiality": "direct_observation",
+            "confidence_basis": "source quote states May's wish",
+            "domain_object": "gift_touchpoint",
+            "candidate_workflow": "gift_signal/touchpoint",
+            "candidate_storage_targets": [
+              "gift_signal"
+            ],
+            "proposal_kind": "write_candidate"
+          }
+        ],
+        "semantic_primary_unit_id": "u1",
+        "workflow_primary_unit_id": "u1",
+        "secondary_unit_ids": [],
+        "semantic_primary": "u1:May gift touchpoint",
+        "workflow_primary": "gift_signal/touchpoint",
+        "secondary_workflows": [],
+        "storage_targets": [
+          "gift_signal"
+        ],
+        "retention_policy": "write_candidate",
+        "illocutionary_force": "assertion",
+        "domain_frame": "gift_touchpoint",
+        "operation": "create",
+        "opportunity_type": "gift",
+        "asset_value": [
+          "opportunity"
+        ],
+        "sensitivity_domain": "none",
+        "severity": "none",
+        "privacy_display_risk": "low",
+        "visibility_preference": "default",
+        "requires_discreet_review": false,
+        "ambiguous_slots": [
+          "preference_uncertain"
+        ],
+        "candidate_interpretations": [
+          {
+            "workflow_primary": "gift_signal/touchpoint",
+            "reason": "朋友愿望可作为礼物线索，但不是用户日程。"
+          }
+        ],
+        "blocked_decision": "cannot_generate_final_gift_without_preference_confirmation",
+        "confirmation_question": "May 最近更偏哪种香味，是否会介意提前知道？",
+        "reason_summary": "这是礼物触点候选，不直接生成最终礼物或自动购买动作。",
+        "confusion_guard": [
+          "gift_touchpoint_vs_user_action"
+        ]
+      }
+    }
+  ],
+  "conflicts": [],
+  "follow_up_questions": []
+}

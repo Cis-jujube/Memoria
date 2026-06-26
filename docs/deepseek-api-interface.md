@@ -80,6 +80,20 @@ Settings connection tests use a minimal JSON ping through `/chat/completions`.
 They do not run the full Memoria extraction schema, so a connectivity/model
 failure is not confused with a business JSON validation failure.
 
+The native extraction prompt currently asks for `extract_memory v1.1` JSON:
+
+- `schema_version: "1.1"`
+- `contract_name: "extract_memory"`
+- structured `reminder_proposals`
+- structured `gift_signal_proposals`
+- optional `value_struct` only for `anniversaries`, `dietary_allergy`, and
+  `contact`
+
+This does not migrate provider behavior. DeepSeek is still called through
+`/chat/completions` with `response_format: { "type": "json_object" }`; strict
+key and value validation happens locally in Swift before any `PendingUpdate`
+is written.
+
 Native storage boundaries:
 
 - iOS/macOS: SQLite3 for app data, Keychain for the API key.

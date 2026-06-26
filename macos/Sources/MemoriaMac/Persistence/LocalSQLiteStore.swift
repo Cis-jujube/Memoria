@@ -306,6 +306,13 @@ public final class LocalSQLiteStore {
         }
     }
 
+    public func updateMemoryAtomStatus(id: String, status: MemoryAtomStatus) throws {
+        try execute(
+            "UPDATE memory_atoms SET status = ?, updated_at = ? WHERE id = ?",
+            [status.rawValue, nowString(), id]
+        )
+    }
+
     public func replaceThemeLinks(memoryID: String, themeNames: [String]) throws {
         try withTransaction {
             try execute("DELETE FROM memory_theme_links WHERE memory_id = ?", [memoryID])
@@ -516,6 +523,26 @@ public final class LocalSQLiteStore {
                 reminder.context,
                 reminder.location
             ]
+        )
+    }
+
+    public func deleteReminder(id: String) throws {
+        try execute("DELETE FROM reminders WHERE id = ?", [id])
+    }
+
+    public func replaceProfileCategoryNote(personID: String, category: PersonProfileCategory, value: String) throws {
+        guard let person = try loadSnapshot().people.first(where: { $0.id == personID }) else {
+            throw AIContractError.invalidProfilePatch
+        }
+        var notes = person.categoryNotes
+        if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            notes.removeValue(forKey: category)
+        } else {
+            notes[category] = value
+        }
+        try execute(
+            "UPDATE people SET category_notes_json = ?, last_signal = ? WHERE id = ?",
+            [encodeCategoryNotes(notes), value, personID]
         )
     }
 

@@ -1,0 +1,25 @@
+{
+  "entry_summary": "bad confidence",
+  "memory_proposals": [
+    {
+      "proposal_type": "memory_atom",
+      "memory_type": "person_fact",
+      "title": "Alex likes chips",
+      "summary": "Alex likes chips",
+      "content": "Alex likes chips",
+      "source_quote": "Alex likes chips",
+      "confidence": 1.2,
+      "sensitivity": "normal",
+      "is_ai_inferred": false,
+      "related_people": [],
+      "themes": [],
+      "follow_up_questions": [],
+      "suggested_actions": []
+    }
+  ],
+  "person_fact_proposals": [],
+  "reminder_proposals": [],
+  "gift_signal_proposals": [],
+  "conflicts": [],
+  "follow_up_questions": []
+}

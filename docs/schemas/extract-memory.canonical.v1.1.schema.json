@@ -1,0 +1,752 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memoria.local/schemas/extract-memory.canonical.v1.1.schema.json",
+  "title": "Memoria extract_memory canonical schema v1.1",
+  "description": "Canonical contract for Memoria's local-first extract_memory workflow. Runtime validation is implemented in Swift without adding a JSON Schema dependency.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_name",
+    "entry_summary",
+    "memory_proposals",
+    "person_fact_proposals",
+    "reminder_proposals",
+    "gift_signal_proposals",
+    "conflicts",
+    "follow_up_questions"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.1" },
+    "contract_name": { "const": "extract_memory" },
+    "entry_summary": { "type": "string", "minLength": 1 },
+    "memory_proposals": { "type": "array", "items": { "$ref": "#/$defs/memory_atom_proposal" } },
+    "person_fact_proposals": { "type": "array", "items": { "$ref": "#/$defs/person_profile_patch_proposal" } },
+    "reminder_proposals": { "type": "array", "items": { "$ref": "#/$defs/reminder_proposal" } },
+    "gift_signal_proposals": { "type": "array", "items": { "$ref": "#/$defs/gift_signal_proposal" } },
+    "conflicts": { "type": "array", "items": { "type": "string" } },
+    "follow_up_questions": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "memory_atom_type": {
+      "enum": [
+        "personal_reflection",
+        "idea",
+        "relationship_memory",
+        "person_fact",
+        "event",
+        "reminder_source",
+        "gift_signal",
+        "file_note"
+      ]
+    },
+    "memory_sensitivity": { "enum": ["normal", "private", "sensitive"] },
+    "person_profile_category": {
+      "enum": [
+        "identity",
+        "contact",
+        "relationship",
+        "education",
+        "career",
+        "family",
+        "friend_network",
+        "interests",
+        "media",
+        "food_preference",
+        "dietary_allergy",
+        "travel_preference",
+        "style_aesthetic",
+        "spending_preference",
+        "gift_history",
+        "lifestyle",
+        "current_state",
+        "life_events",
+        "emotional_preference",
+        "communication_preference",
+        "taboo_boundary",
+        "anniversaries",
+        "reminders",
+        "files",
+        "ai_inference"
+      ]
+    },
+    "merge_strategy": { "enum": ["append_unique"] },
+    "gift_social_risk": {
+      "enum": [
+        "surprise_sensitive",
+        "budget_uncertain",
+        "preference_uncertain",
+        "relationship_sensitive",
+        "avoid_topic",
+        "timing_sensitive",
+        "duplicate_gift_risk"
+      ]
+    },
+    "related_person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_name", "matched_person_id", "match_confidence", "relation_type"],
+      "properties": {
+        "display_name": { "type": "string", "minLength": 1 },
+        "matched_person_id": { "type": ["string", "null"] },
+        "match_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "relation_type": { "enum": ["about", "mentioned", "involves", "inferred"] }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "confidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "relationship_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_person_id",
+        "source_display_name",
+        "target_person_id",
+        "target_display_name",
+        "label",
+        "strength",
+        "relation_kind",
+        "tags",
+        "ai_primary_tag",
+        "confidence",
+        "is_ai_inferred",
+        "source_quote"
+      ],
+      "properties": {
+        "source_person_id": { "type": ["string", "null"] },
+        "source_display_name": { "type": "string" },
+        "target_person_id": { "type": ["string", "null"] },
+        "target_display_name": { "type": "string" },
+        "label": { "type": "string" },
+        "strength": { "type": "number", "minimum": 0, "maximum": 1 },
+        "relation_kind": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "ai_primary_tag": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "is_ai_inferred": { "type": "boolean" },
+        "source_quote": { "type": "string", "minLength": 1 }
+      }
+    },
+    "memory_atom_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_type",
+        "memory_type",
+        "title",
+        "summary",
+        "content",
+        "source_quote",
+        "confidence",
+        "sensitivity",
+        "is_ai_inferred",
+        "related_people",
+        "themes",
+        "relationship_edge_proposals",
+        "follow_up_questions",
+        "suggested_actions",
+        "classification"
+      ],
+      "properties": {
+        "proposal_type": { "const": "memory_atom" },
+        "memory_type": { "$ref": "#/$defs/memory_atom_type" },
+        "title": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "content": { "type": "string" },
+        "source_quote": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sensitivity": { "$ref": "#/$defs/memory_sensitivity" },
+        "is_ai_inferred": { "type": "boolean" },
+        "related_people": { "type": "array", "items": { "$ref": "#/$defs/related_person" } },
+        "themes": { "type": "array", "items": { "$ref": "#/$defs/theme" } },
+        "relationship_edge_proposals": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/relationship_edge" }
+        },
+        "follow_up_questions": { "type": "array", "items": { "type": "string" } },
+        "suggested_actions": { "type": "array", "items": { "type": "string" } },
+        "classification": { "$ref": "#/$defs/reminder_proposal/properties/classification" }
+      }
+    },
+    "anniversary_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "date_label", "month", "day", "year"],
+      "properties": {
+        "kind": { "enum": ["birthday", "anniversary", "exam", "work_start", "other"] },
+        "date_label": { "type": "string", "minLength": 1 },
+        "month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12 },
+        "day": { "type": ["integer", "null"], "minimum": 1, "maximum": 31 },
+        "year": { "type": ["integer", "null"] }
+      }
+    },
+    "dietary_allergy_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "item", "severity"],
+      "properties": {
+        "kind": { "enum": ["dislike", "allergy", "religious", "health", "unknown"] },
+        "item": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["low", "medium", "high", "unknown"] }
+      }
+    },
+    "contact_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "value", "visibility"],
+      "properties": {
+        "channel": { "enum": ["wechat", "phone", "email", "instagram", "linkedin", "other"] },
+        "value": { "type": "string", "minLength": 1 },
+        "visibility": { "enum": ["private", "normal"] }
+      }
+    },
+    "person_profile_patch_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_person_id",
+        "target_display_name",
+        "profile_category",
+        "proposed_value",
+        "source_quote",
+        "confidence",
+        "sensitivity",
+        "is_ai_inferred",
+        "merge_strategy",
+        "classification"
+      ],
+      "properties": {
+        "target_person_id": { "type": ["string", "null"] },
+        "target_display_name": { "type": "string" },
+        "profile_category": { "$ref": "#/$defs/person_profile_category" },
+        "proposed_value": { "type": "string", "minLength": 1 },
+        "value_struct": {
+          "anyOf": [
+            { "$ref": "#/$defs/anniversary_value" },
+            { "$ref": "#/$defs/dietary_allergy_value" },
+            { "$ref": "#/$defs/contact_value" },
+            { "type": "null" }
+          ]
+        },
+        "source_quote": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sensitivity": { "$ref": "#/$defs/memory_sensitivity" },
+        "is_ai_inferred": { "type": "boolean" },
+        "merge_strategy": { "$ref": "#/$defs/merge_strategy" },
+        "classification": { "$ref": "#/$defs/reminder_proposal/properties/classification" }
+      }
+    },
+    "reminder_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "title",
+        "target_person_id",
+        "target_display_name",
+        "candidate_person_ids",
+        "due_at",
+        "due_label",
+        "source_entry_id",
+        "source_quote",
+        "source_quote_start",
+        "source_quote_end",
+        "confidence",
+        "is_ai_inferred",
+        "legacy_text",
+        "schedule_subtype",
+        "schedule_execution_state",
+        "time_role",
+        "time_expression_kind",
+        "time_precision",
+        "raw_time_expression",
+        "reference_date",
+        "reference_datetime",
+        "timezone",
+        "start_at",
+        "end_at",
+        "deadline_relation",
+        "remind_at",
+        "commitment_level",
+        "notification_policy",
+        "needs_slot_confirmation",
+        "confirmation_blockers",
+        "confirmation_reasons",
+        "requires_user_approval",
+        "reason_summary",
+        "confusion_guard",
+        "classification",
+        "actor",
+        "action",
+        "target_person",
+        "location",
+        "resolved_window",
+        "resolved_time",
+        "recurrence_rule",
+        "mutation_match",
+        "contextual_guard"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "schedule_execution_state": { "const": "executable_reminder" },
+              "schedule_subtype": { "const": "event" }
+            },
+            "required": ["schedule_execution_state", "schedule_subtype"]
+          },
+          "then": {
+            "required": ["start_at", "remind_at"],
+            "properties": {
+              "start_at": { "type": "string", "minLength": 1 },
+              "remind_at": { "type": "string", "minLength": 1 },
+              "time_role": { "const": "reminder_trigger" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "schedule_execution_state": { "const": "executable_reminder" },
+              "schedule_subtype": { "const": "deadline" }
+            },
+            "required": ["schedule_execution_state", "schedule_subtype"]
+          },
+          "then": {
+            "required": ["due_at", "deadline_relation", "remind_at"],
+            "properties": {
+              "due_at": { "type": "string", "minLength": 1 },
+              "deadline_relation": { "enum": ["before_or_on", "before_start_of_day", "by_end_of_day", "unknown"] },
+              "remind_at": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "schedule_execution_state": { "const": "executable_reminder" },
+              "schedule_subtype": { "const": "recurring" }
+            },
+            "required": ["schedule_execution_state", "schedule_subtype"]
+          },
+          "then": {
+            "properties": {
+              "recurrence_rule": {
+                "type": "object",
+                "required": ["frequency", "interval", "anchor_date", "timezone", "skip_or_exception_policy", "calendar_system"],
+                "allOf": [
+                  {
+                    "anyOf": [
+                      { "required": ["by_weekday"] },
+                      { "required": ["day_of_month"] }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      { "required": ["remind_time_or_null"] },
+                      { "required": ["next_trigger_at_or_null"] }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "frequency": { "type": "string", "minLength": 1 },
+                  "interval": { "type": "string", "minLength": 1 },
+                  "anchor_date": { "type": "string", "minLength": 1 },
+                  "timezone": { "type": "string", "minLength": 1 },
+                  "skip_or_exception_policy": { "type": "string", "minLength": 1 },
+                  "calendar_system": { "type": "string", "minLength": 1 },
+                  "by_weekday": { "type": "string", "minLength": 1 },
+                  "day_of_month": { "type": "string", "minLength": 1 },
+                  "remind_time_or_null": { "type": "string", "minLength": 1 },
+                  "next_trigger_at_or_null": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "schedule_execution_state": { "const": "executable_reminder" } },
+            "required": ["schedule_execution_state"]
+          },
+          "then": {
+            "properties": {
+              "needs_slot_confirmation": { "const": false },
+              "confirmation_blockers": { "maxItems": 0 },
+              "notification_policy": {
+                "type": "object",
+                "properties": {
+                  "delivery_mode": { "const": "reminder" },
+                  "policy_source": { "enum": ["user_explicit", "user_preference", "user_confirmed"] },
+                  "requires_confirmation": { "const": false }
+                },
+                "required": ["delivery_mode", "policy_source", "requires_confirmation"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "schedule_execution_state": { "const": "executable_schedule_item" } },
+            "required": ["schedule_execution_state"]
+          },
+          "then": {
+            "properties": {
+              "needs_slot_confirmation": { "const": false },
+              "confirmation_blockers": { "maxItems": 0 },
+              "notification_policy": {
+                "type": "object",
+                "properties": {
+                  "delivery_mode": { "enum": ["calendar_only", "no_notification"] },
+                  "policy_source": { "const": "user_explicit" },
+                  "requires_confirmation": { "const": false }
+                },
+                "required": ["delivery_mode", "policy_source", "requires_confirmation"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "schedule_execution_state": { "const": "draft_schedule_candidate" } },
+            "required": ["schedule_execution_state"]
+          },
+          "then": {
+            "properties": {
+              "needs_slot_confirmation": { "const": true },
+              "confirmation_blockers": { "minItems": 1 }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "proposal_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "target_person_id": { "type": ["string", "null"] },
+        "target_display_name": { "type": ["string", "null"] },
+        "candidate_person_ids": { "type": "array", "items": { "type": "string" } },
+        "due_at": { "type": ["string", "null"] },
+        "due_label": { "type": "string" },
+        "source_entry_id": { "type": ["string", "null"] },
+        "source_quote": { "type": "string", "minLength": 1 },
+        "source_quote_start": { "type": ["integer", "null"], "minimum": 0 },
+        "source_quote_end": { "type": ["integer", "null"], "minimum": 0 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "is_ai_inferred": { "type": "boolean" },
+        "legacy_text": { "type": "string" },
+        "schedule_subtype": {
+          "enum": [
+            "event",
+            "deadline",
+            "task",
+            "follow_up",
+            "prep",
+            "recurring",
+            "anniversary_reminder",
+            "contextual_guard",
+            "cancel_existing",
+            "reschedule_existing",
+            "update_existing"
+          ]
+        },
+        "schedule_execution_state": {
+          "enum": [
+            "draft_schedule_candidate",
+            "executable_reminder",
+            "executable_schedule_item",
+            "contextual_guard_candidate",
+            "anchored_contextual_guard",
+            "existing_item_mutation"
+          ]
+        },
+        "time_role": {
+          "enum": ["event_start", "reminder_trigger", "deadline_due", "recurrence_trigger", "anchor_event", "ambiguous"]
+        },
+        "time_expression_kind": {
+          "enum": [
+            "exact_datetime",
+            "absolute_date",
+            "relative_date",
+            "relative_window",
+            "fuzzy_window",
+            "event_relative",
+            "recurring_rule",
+            "missing_time"
+          ]
+        },
+        "time_precision": {
+          "enum": ["exact_minute", "date_only", "half_day_window", "relative_window", "unresolved"]
+        },
+        "raw_time_expression": { "type": ["string", "null"] },
+        "reference_date": { "type": ["string", "null"] },
+        "reference_datetime": { "type": ["string", "null"] },
+        "timezone": { "type": ["string", "null"] },
+        "start_at": { "type": ["string", "null"] },
+        "end_at": { "type": ["string", "null"] },
+        "deadline_relation": { "type": ["string", "null"] },
+        "remind_at": { "type": ["string", "null"] },
+        "commitment_level": {
+          "enum": ["committed", "intended", "tentative", "conditional", "suggested", "past", "negative"]
+        },
+        "notification_policy": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": [
+            "delivery_mode",
+            "policy_source",
+            "trigger_at_or_null",
+            "offset_or_null",
+            "next_trigger_at_or_null",
+            "timezone",
+            "requires_confirmation",
+            "default_allowed"
+          ],
+          "properties": {
+            "delivery_mode": { "enum": ["reminder", "calendar_only", "no_notification", "unspecified"] },
+            "policy_source": { "enum": ["user_explicit", "user_preference", "user_confirmed", "system_default_disallowed"] },
+            "trigger_at_or_null": { "type": ["string", "null"] },
+            "offset_or_null": { "type": ["string", "null"] },
+            "next_trigger_at_or_null": { "type": ["string", "null"] },
+            "timezone": { "type": "string" },
+            "requires_confirmation": { "type": "boolean" },
+            "default_allowed": { "type": "boolean" }
+          }
+        },
+        "needs_slot_confirmation": { "type": "boolean" },
+        "confirmation_blockers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["code", "field", "required_for", "question"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1 },
+              "field": { "type": "string", "minLength": 1 },
+              "required_for": { "type": "string", "minLength": 1 },
+              "observed_value": {
+                "type": ["string", "number", "boolean", "object", "array", "null"]
+              },
+              "question": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "confirmation_reasons": { "type": "array", "items": { "type": "string" } },
+        "requires_user_approval": { "const": true },
+        "reason_summary": { "type": ["string", "null"] },
+        "confusion_guard": { "type": "array", "items": { "type": "string" } },
+        "actor": { "type": ["string", "null"] },
+        "action": { "type": ["string", "null"] },
+        "target_person": { "type": ["string", "null"] },
+        "location": { "type": ["string", "null"] },
+        "resolved_window": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        },
+        "resolved_time": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        },
+        "recurrence_rule": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" },
+          "properties": {
+            "frequency": { "type": "string" },
+            "interval": { "type": "string" },
+            "anchor_date": { "type": "string" },
+            "by_weekday": { "type": "string" },
+            "day_of_month": { "type": "string" },
+            "remind_time_or_null": { "type": "string" },
+            "next_trigger_at_or_null": { "type": "string" },
+            "timezone": { "type": "string" },
+            "end_condition_or_null": { "type": "string" },
+            "skip_or_exception_policy": { "type": "string" },
+            "business_day_policy": { "type": "string" },
+            "calendar_system": { "type": "string" },
+            "timezone_dst_policy": { "type": "string" }
+          }
+        },
+        "mutation_match": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        },
+        "contextual_guard": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        },
+        "classification": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": [
+            "proposition_units",
+            "semantic_primary_unit_id",
+            "workflow_primary_unit_id",
+            "secondary_unit_ids",
+            "semantic_primary",
+            "workflow_primary",
+            "secondary_workflows",
+            "storage_targets",
+            "retention_policy",
+            "reason_summary",
+            "confusion_guard"
+          ],
+          "properties": {
+            "proposition_units": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "unit_id",
+                  "source_span",
+                  "propositional_content",
+                  "attitude_holder",
+                  "intentional_mode",
+                  "direction_of_fit",
+                  "evidentiality",
+                  "confidence_basis",
+                  "domain_object",
+                  "candidate_workflow",
+                  "candidate_storage_targets",
+                  "proposal_kind"
+                ],
+                "properties": {
+                  "unit_id": { "type": "string", "minLength": 1 },
+                  "source_span": { "type": "string", "minLength": 1 },
+                  "propositional_content": { "type": "string", "minLength": 1 },
+                  "attitude_holder": { "type": "string", "minLength": 1 },
+                  "intentional_mode": {
+                    "enum": ["belief/assertion", "desire", "intention", "fear", "preference", "request", "motivation", "self_interpretation", "unknown"]
+                  },
+                  "direction_of_fit": {
+                    "enum": ["mind_to_world", "world_to_mind", "self_interpretation", "none", "unknown"]
+                  },
+                  "evidentiality": {
+                    "enum": ["direct_observation", "inference", "hearsay", "file_source", "user_guess", "unknown"]
+                  },
+                  "confidence_basis": { "type": "string", "minLength": 1 },
+                  "domain_object": {
+                    "enum": ["episodic_self_state", "durable_self_pattern", "person_fact", "relationship", "schedule", "gift_touchpoint", "file_source", "risk", "unknown"]
+                  },
+                  "candidate_workflow": { "type": ["string", "null"] },
+                  "candidate_storage_targets": { "type": "array", "items": { "type": "string" } },
+                  "proposal_kind": {
+                    "enum": ["write_candidate", "workflow_candidate", "context_only", "blocker"]
+                  }
+                }
+              }
+            },
+            "semantic_primary_unit_id": { "type": ["string", "null"] },
+            "workflow_primary_unit_id": { "type": ["string", "null"] },
+            "secondary_unit_ids": { "type": "array", "items": { "type": "string" } },
+            "semantic_primary": { "type": ["string", "null"] },
+            "workflow_primary": { "type": ["string", "null"] },
+            "secondary_workflows": { "type": "array", "items": { "type": "string" } },
+            "storage_targets": { "type": "array", "items": { "type": "string" } },
+            "retention_policy": { "type": "string" },
+            "illocutionary_force": { "type": ["string", "null"] },
+            "domain_frame": { "type": ["string", "null"] },
+            "operation": { "type": ["string", "null"] },
+            "opportunity_type": { "type": ["string", "null"] },
+            "asset_value": { "type": "array", "items": { "type": "string" } },
+            "sensitivity_domain": { "type": "string" },
+            "severity": { "type": "string" },
+            "privacy_display_risk": { "type": "string" },
+            "visibility_preference": { "type": "string" },
+            "requires_discreet_review": { "type": "boolean" },
+            "ambiguous_slots": { "type": "array", "items": { "type": "string" } },
+            "candidate_interpretations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["workflow_primary", "reason"],
+                "properties": {
+                  "workflow_primary": { "type": "string", "minLength": 1 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "blocked_decision": { "type": ["string", "null"] },
+            "confirmation_question": { "type": ["string", "null"] },
+            "reason_summary": { "type": "string" },
+            "confusion_guard": { "type": "array", "items": { "type": "string" } },
+            "opportunity_consent": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            },
+            "relationship_stage": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            },
+            "priority_score_audit": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            },
+            "opportunity_lifecycle": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            },
+            "network_path": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            },
+            "give_first_offer": {
+              "type": ["object", "null"],
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "gift_signal_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "target_person_id",
+        "target_display_name",
+        "candidate_person_ids",
+        "signal_summary",
+        "occasion",
+        "budget_hint",
+        "risk_tags",
+        "risk",
+        "confirmation_question",
+        "source_quote",
+        "source_quote_start",
+        "source_quote_end",
+        "confidence",
+        "is_ai_inferred",
+        "legacy_text",
+        "classification"
+      ],
+      "properties": {
+        "proposal_id": { "type": "string", "minLength": 1 },
+        "target_person_id": { "type": ["string", "null"] },
+        "target_display_name": { "type": ["string", "null"] },
+        "candidate_person_ids": { "type": "array", "items": { "type": "string" } },
+        "signal_summary": { "type": "string", "minLength": 1 },
+        "occasion": { "type": ["string", "null"] },
+        "budget_hint": { "type": ["string", "null"] },
+        "risk_tags": { "type": "array", "items": { "$ref": "#/$defs/gift_social_risk" } },
+        "risk": { "type": "string" },
+        "confirmation_question": { "type": "string", "minLength": 1 },
+        "source_quote": { "type": "string", "minLength": 1 },
+        "source_quote_start": { "type": ["integer", "null"], "minimum": 0 },
+        "source_quote_end": { "type": ["integer", "null"], "minimum": 0 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "is_ai_inferred": { "type": "boolean" },
+        "legacy_text": { "type": "string" },
+        "classification": { "$ref": "#/$defs/reminder_proposal/properties/classification" }
+      }
+    }
+  }
+}

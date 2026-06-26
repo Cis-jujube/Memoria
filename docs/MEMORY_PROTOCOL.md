@@ -45,6 +45,9 @@ Free-form input
 - Approval is the user signature for a memory transaction.
 - DeepSeek API keys are stored only in Keychain and never in SQLite.
 - Record mode routes a proposal to the right review partition; it does not let AI bypass user approval.
+- AI schema metadata and structured reminder/gift/profile context are stored in
+  `pending_updates.payload_json` as a compatible envelope. They do not require
+  new SQLite columns in this phase.
 - Relationship closeness has two layers: a manual level from 1-6 and
   AI-assisted signals. AI may suggest signals, but it does not directly change
   the manual level.
@@ -60,8 +63,43 @@ Free-form input
 - `AIWorkflowService` supports deterministic mocked extraction for local
   workflow verification and optional DeepSeek extraction when a Keychain API key
   is present.
+- `extract_memory v1.0` outputs without version metadata remain readable.
+  `extract_memory v1.1` outputs add `schema_version`, `contract_name`,
+  structured `reminder_proposals`, structured `gift_signal_proposals`, and
+  minimal `value_struct` for birthdays/anniversaries, dietary/allergy notes, and
+  contact details.
+- Unknown `extract_memory` versions, wrong contract names, unknown JSON keys, or
+  out-of-range confidence values fail closed. The saved `RawEntry` remains
+  local, and invalid model output does not become `PendingUpdate` or confirmed
+  memory.
 - 记录 -> 整理台 -> approve creates a confirmed `MemoryAtom`.
 - The macOS sidebar groups are 总览, 工作流, 三种模式, and 系统. The workflow entries are 记录 and 整理台; the mode entries are 自我检索, 朋友档案管理, and 行程安排.
+
+## Pending Payload Envelope
+
+Legacy `PendingUpdate.payload_json` may still be a direct
+`MemoryAtomProposal` or `PersonProfilePatchProposal`.
+
+New structured proposals may use:
+
+```json
+{
+  "payload_schema_version": "1.1",
+  "payload_contract_name": "pending_update_payload",
+  "proposal_kind": "memory_atom",
+  "proposal": {},
+  "structured_context": {},
+  "review_explanation": {},
+  "freshness": {},
+  "approval_result": null,
+  "undo": null
+}
+```
+
+The `proposal` field remains the full legacy Codable proposal used by display,
+edit, and approval paths. `structured_context`, `review_explanation`, and
+`freshness` only enrich review, editing, explanation, and future undo behavior.
+They are not a new write path.
 
 ## Current Product Additions
 

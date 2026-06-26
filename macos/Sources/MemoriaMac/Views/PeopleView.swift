@@ -575,6 +575,8 @@ private struct PersonDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
+            RelationshipToneLegend(language: store.settings.language)
+
             RelationshipMiniGraph(
                 person: person,
                 edges: relationshipEdges,
@@ -819,13 +821,53 @@ private struct PersonDetailView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(memories) { memory in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(memory.title)
-                            .font(.subheadline.weight(.semibold))
-                        Text(memory.summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(memory.title)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(memory.summary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+
+                            Spacer()
+
+                            Menu {
+                                Button {
+                                    store.markMemoryWrong(memory)
+                                } label: {
+                                    Label(isChinese ? "标记错误" : "Mark wrong", systemImage: "exclamationmark.triangle")
+                                }
+                                Button {
+                                    store.createChangePersonCorrection(for: memory)
+                                } label: {
+                                    Label(isChinese ? "改给另一个人" : "Move to another person", systemImage: "person.2")
+                                }
+                                Button {
+                                    store.createReplacementFactCorrection(for: memory, person: person)
+                                } label: {
+                                    Label(isChinese ? "替换事实" : "Replace fact", systemImage: "arrow.triangle.2.circlepath")
+                                }
+                                Button {
+                                    store.createStaleCorrection(for: memory)
+                                } label: {
+                                    Label(isChinese ? "标记过期" : "Mark stale", systemImage: "clock.badge.questionmark")
+                                }
+                            } label: {
+                                Label(isChinese ? "纠错" : "Correct", systemImage: "pencil.and.outline")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .help(isChinese ? "对这条已确认记忆发起纠错" : "Start a correction for this confirmed memory")
+                        }
+
+                        if memory.status == .disputed {
+                            Label(isChinese ? "已标记错误" : "Disputed", systemImage: "exclamationmark.triangle")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.orange)
+                        }
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1258,19 +1300,25 @@ private struct RelationshipEdgeInlineButton: View {
     let action: () -> Void
 
     var body: some View {
+        let tone = edge.visualTone
+
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
-                    .foregroundStyle(Color.memoriaSage)
+                    .foregroundStyle(tone.lineColor)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(edge.counterpartName(for: centerPersonID))
                         .font(.callout.weight(.semibold))
                         .lineLimit(1)
-                    Text(edge.displayTag(priorities: priorities))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(edge.displayTag(priorities: priorities))
+                        Text(tone.title(for: isChinese ? .zhCN : .en))
+                            .foregroundStyle(tone.lineColor)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
 
                 Spacer()
@@ -1282,11 +1330,11 @@ private struct RelationshipEdgeInlineButton: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.035))
+            .background(tone.softFill)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    .stroke(tone.lineColor.opacity(0.18), lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
@@ -1302,63 +1350,167 @@ private struct RelationshipMiniGraph: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let visibleEdges = Array(edges.prefix(8))
             let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            let radius = min(proxy.size.width, proxy.size.height) * 0.34
+            let radiusX = max(58, proxy.size.width / 2 - 62)
+            let radiusY = max(46, proxy.size.height / 2 - 42)
+            let radius = min(radiusX, radiusY)
 
             ZStack {
-                ForEach(Array(edges.enumerated()), id: \.element.id) { index, edge in
-                    let angle = Double(index) / Double(max(edges.count, 1)) * Double.pi * 2 - Double.pi / 2
+                Canvas { context, _ in
+                    let ringRect = CGRect(
+                        x: center.x - radius,
+                        y: center.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                    context.stroke(
+                        Path(ellipseIn: ringRect),
+                        with: .color(Color.primary.opacity(0.045)),
+                        style: StrokeStyle(lineWidth: 1)
+                    )
+
+                    for (index, edge) in visibleEdges.enumerated() {
+                        let angle = angle(for: index, count: visibleEdges.count)
+                        let point = CGPoint(
+                            x: center.x + CGFloat(cos(angle)) * radius,
+                            y: center.y + CGFloat(sin(angle)) * radius
+                        )
+                        var path = Path()
+                        path.move(to: center)
+                        path.addLine(to: point)
+                        let dash: [CGFloat] = edge.visualTone == .unfriendly ? [6, 4] : []
+                        context.stroke(
+                            path,
+                            with: .color(edge.visualTone.lineColor.opacity(0.16)),
+                            style: StrokeStyle(lineWidth: 7, lineCap: .round, dash: dash)
+                        )
+                        context.stroke(
+                            path,
+                            with: .color(edge.visualTone.lineColor.opacity(0.78)),
+                            style: StrokeStyle(lineWidth: edge.visualTone == .intimate ? 2.4 : 2.0, lineCap: .round, dash: dash)
+                        )
+                    }
+                }
+
+                ForEach(Array(visibleEdges.enumerated()), id: \.element.id) { index, edge in
+                    let angle = angle(for: index, count: visibleEdges.count)
                     let point = CGPoint(
                         x: center.x + CGFloat(cos(angle)) * radius,
                         y: center.y + CGFloat(sin(angle)) * radius
                     )
 
-                    Path { path in
-                        path.move(to: center)
-                        path.addLine(to: point)
-                    }
-                    .stroke(Color.memoriaSage.opacity(0.42), lineWidth: 1.6)
-
                     Button {
                         onEditEdge(edge)
                     } label: {
-                        VStack(spacing: 4) {
-                            Text(edge.counterpartName(for: person.id))
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                            Text(edge.displayTag(priorities: priorities))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                        RelationshipMiniNode(
+                            initials: initials(for: edge.counterpartName(for: person.id)),
+                            name: edge.counterpartName(for: person.id),
+                            tag: edge.displayTag(priorities: priorities),
+                            tone: edge.visualTone
+                        )
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.background)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.memoriaSage.opacity(0.28))
-                    )
                     .help("Edit relationship")
                     .position(point)
                 }
 
-                VStack(spacing: 5) {
-                    Text(person.initials)
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(width: 52, height: 52)
-                        .background(Color.memoriaInk)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    Text(person.displayName)
-                        .font(.caption.weight(.semibold))
+                RelationshipMiniCenterNode(person: person)
+                    .position(center)
+
+                if edges.count > visibleEdges.count {
+                    Text("+\(edges.count - visibleEdges.count)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.memoriaInk)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.memoriaGold.opacity(0.24))
+                        .clipShape(Capsule())
+                        .position(x: proxy.size.width - 28, y: proxy.size.height - 22)
                 }
-                .position(center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func angle(for index: Int, count: Int) -> Double {
+        guard count > 0 else { return -.pi / 2 }
+        return Double(index) / Double(count) * Double.pi * 2 - Double.pi / 2
+    }
+
+    private func initials(for name: String) -> String {
+        let parts = name
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+
+        if parts.count >= 2 {
+            return parts.prefix(2).compactMap(\.first).map { String($0).uppercased() }.joined()
+        }
+
+        return String(name.prefix(2)).uppercased()
+    }
+}
+
+private struct RelationshipMiniNode: View {
+    let initials: String
+    let name: String
+    let tag: String
+    let tone: RelationshipVisualTone
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(initials)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.memoriaInk)
+                .frame(width: 34, height: 34)
+                .background(tone.softFill)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(tone.lineColor.opacity(0.62), lineWidth: 1)
+                }
+
+            Text(name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text(tag)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(tone.lineColor)
+                .lineLimit(1)
+        }
+        .frame(width: 92)
+        .padding(.vertical, 5)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tone.lineColor.opacity(0.24), lineWidth: 1)
+        }
+    }
+}
+
+private struct RelationshipMiniCenterNode: View {
+    let person: FriendPerson
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Text(person.initials)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(Color.memoriaInk)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(Color.memoriaGold.opacity(0.68), lineWidth: 1.4)
+                }
+            Text(person.displayName)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .frame(width: 92)
     }
 }
 
