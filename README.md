@@ -40,6 +40,76 @@
 
 **English**: Memoria's core loop is "Capture -> Review Desk -> Confirmed Update." You can capture notes for self retrieval, friend profile management, and scheduling. AI turns raw entries into pending updates, and nothing is committed to memory, profiles, or reminders until the user confirms it.
 
+## Product Walkthrough / 功能图解
+
+Screenshots below are from the current macOS preview with demo data.
+
+下面截图来自当前 macOS 预览版和内置 demo 数据。
+
+### 1. Home Dashboard / 首页总览
+
+![Memoria home dashboard](docs/screenshots/memoria-overview.png)
+
+**中文**：首页把 Memoria 的使用路径直接摆出来：先进入 `记录` 写原文，再到 `整理台` 批准 AI 生成的整理建议，最后分别进入 `自我检索`、`朋友档案管理` 或 `行程安排` 阅读长期记忆。左侧边栏固定为四组：总览、工作流、三种模式和系统，避免把“记录入口”和“长期阅读入口”混在一起。
+
+**English**: The home dashboard makes the product loop explicit: capture a raw note, approve AI-generated proposals in the Review Desk, then read the confirmed memory through Self Search, Friend Dossiers, or Schedule. The sidebar separates workflow entry points from long-term reading surfaces.
+
+### 2. Capture / 记录
+
+![Memoria capture screen](docs/screenshots/memoria-capture.png)
+
+**中文**：记录页先让用户选择模式，再写原文。模式不是装饰：`自我检索` 会把内容送到自我记忆分区，`朋友档案管理` 会优先抽取朋友事实、偏好、关系和礼物线索，`行程安排` 会优先处理提醒、deadline、约见和重复事项。AI 不直接写最终档案；原文会先保存成本地 `RawEntry`，再生成可审核的 `PendingUpdate`。
+
+**English**: Capture starts with a mode choice before the user writes the source note. The mode controls routing: self memory, friend/profile facts, or schedule-related proposals. AI never writes final records directly; the source note is saved locally first, then converted into reviewable pending updates.
+
+### 3. Review Desk / 整理台
+
+![Memoria review desk](docs/screenshots/memoria-review-desk.png)
+
+**中文**：整理台是安全边界。它按 `总览`、`自我检索`、`朋友档案管理`、`行程安排` 分区展示同一批待确认项，每张卡都会保留来源句子、判断依据、置信度、写入位置和操作按钮。用户可以编辑、批准、拒绝或跳过；批准一次后才会真正写入本地记忆、朋友档案、提醒或关系边，不会再出现第二次隐式确认。
+
+**English**: The Review Desk is the safety boundary. It shows pending proposals by overview and category, preserving the source quote, rationale, confidence, destination, and actions. The user can edit, approve, reject, or skip. Only approval commits data into local memory, friend profiles, reminders, or relationship edges.
+
+### 4. Friend Dossier Management / 朋友档案管理
+
+![Memoria friend dossier](docs/screenshots/memoria-friend-dossier.png)
+
+**中文**：朋友档案不是普通通讯录。每个人有摘要、相处方式、兴趣与礼物线索、来源记忆、分组和可编辑档案字段。AI 可以提出“Alex 不吃香菜”“May 想试拍立得”这类结构化更新，但必须先经过整理台批准；用户也可以手动编辑档案、删除朋友、调整分组和管理关系边。
+
+**English**: Friend Dossiers are more than contacts. Each person has a summary, interaction style, preferences, gift signals, source memories, groups, and editable profile fields. AI may suggest structured updates, but profile changes still require Review Desk approval.
+
+### 5. Schedule / 行程安排
+
+![Memoria schedule screen](docs/screenshots/memoria-schedule.png)
+
+**中文**：行程页按天、周、月查看提醒、生日、考试、约见、准备事项和未定日期任务。Memoria 会区分“事件时间”和“提醒触发时间”：例如“15:00 开会，14:30 提醒我”可以成为可执行提醒；但“下午约饭”这种模糊时间会留在整理台，要求用户补充具体时间和提醒策略。
+
+**English**: Schedule organizes reminders, birthdays, exams, meetings, preparation tasks, and undated items by day, week, or month. Memoria separates event time from reminder trigger time, and keeps ambiguous schedule candidates in review until the user confirms the missing details.
+
+## Core Capabilities / 核心能力
+
+**中文**：
+
+- 本地优先：关系数据、原始记录、已确认记忆和提醒保存在 macOS 本地 SQLite。
+- 自然语言记录：用户可以随手写中文或英文原文，不需要先填表。
+- AI 整理但不越权：AI 只生成 `PendingUpdate`，不会绕过用户批准直接改档案。
+- 三种模式：自我检索、朋友档案管理、行程安排分别服务长期反思、人际资料和可执行事务。
+- 来源可追溯：整理台保留 `source_quote`、分类依据、置信度和写入目标。
+- 朋友档案：支持人物摘要、偏好、边界、兴趣、礼物线索、分组和关系边。
+- 行程协议：区分 task、event、deadline、recurring、取消/改期和 contextual guard，缺时间或提醒策略时不会创建可执行提醒。
+- 安全存储：DeepSeek API key 只保存在 Keychain，不写入 SQLite、日志、fixture 或发布产物。
+
+**English**:
+
+- Local-first storage for people, raw entries, confirmed memories, and reminders.
+- Natural-language capture in Chinese or English without forcing form-first input.
+- AI-assisted organization through reviewable `PendingUpdate` proposals only.
+- Three durable modes: Self Search, Friend Dossier Management, and Schedule.
+- Source-backed review cards with quotes, rationale, confidence, and destination.
+- Friend profiles with summaries, preferences, boundaries, interests, gift signals, groups, and relationship edges.
+- Schedule protocol for tasks, events, deadlines, recurring items, mutations, and contextual guards.
+- Keychain-only DeepSeek API key storage for the native app.
+
 ## Privacy Model / 隐私模型
 
 **中文**：
